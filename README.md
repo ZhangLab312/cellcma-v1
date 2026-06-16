@@ -434,14 +434,6 @@ python scripts/run_agent_sct.py --task integration --rna data/rna.h5ad --atac da
 
 # Increase inner code generation and repair attempts
 python scripts/run_agent_sct.py --task grn --data data/rna.h5ad --max-iterations 8
-
-# Run targeted ablations
-python scripts/run_agent_sct.py --task perturbation --data data/demo.h5ad --no-debate
-python scripts/run_agent_sct.py --task perturbation --data data/demo.h5ad --no-literature
-python scripts/run_agent_sct.py --task perturbation --data data/demo.h5ad --no-memory
-
-# Control the data preview exposed to the LLM
-python scripts/run_agent_sct.py --task integration --rna data/rna.h5ad --sample-n-obs 200 --sample-n-vars 100
 ```
 
 Because the LLM is non-deterministic, set `LLM_TEMPERATURE=0` (or `--llm-temperature 0`) and pin the provider/model version for byte-level reproducibility. For all reported experiments, keep `.env`, the LLM model identifier, the dataset versions, and the captured `pip freeze` output alongside the saved run results.
@@ -463,34 +455,9 @@ The framework evaluates generated workflows with task-specific metrics, includin
 
 ---
 
-## License
-
-This project is released under the terms specified in the [`LICENSE`](LICENSE) file. If no license file is present in your copy, please contact the corresponding author before redistribution. We recommend using a permissive OSI-approved license (e.g. MIT or Apache-2.0) for downstream reuse.
-
----
-
-## Citation
-
-If you use CellCMA in your research, please cite the accompanying manuscript:
-
-```bibtex
-@article{cellcma,
-  title   = {CellCMA: Collaborative Multi-agent Analysis for Single-cell Tasks},
-  author  = {<Author list>},
-  journal = {<Journal>},
-  year    = {<Year>},
-  note    = {Code: https://github.com/ZhangLab312/cellcma-v1}
-}
-```
-
-*(Replace the placeholder fields with the final publication details.)*
-
----
-
 ## Reporting & Code Availability
 
 - **Code availability.** All source code required to reproduce the analyses is provided in this repository at <https://github.com/ZhangLab312/cellcma-v1>. The main entry point is [`scripts/run_agent_sct.py`](scripts/run_agent_sct.py).
-- **Data availability.** Input datasets should be placed under local `data/` paths (see [Input Data Expectations](#input-data-expectations)). Datasets and model weights are not distributed in this repository.
 - **Reporting summary.** Hardware, software versions, and key hyperparameters are documented above in [System Requirements](#system-requirements) and [Reproducibility](#reproducibility). Please retain the `.env`, dataset versions, and `pip freeze` output used for each reported run.
 
 ---
