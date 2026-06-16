@@ -27,8 +27,6 @@
 - [Output Artifacts](#output-artifacts)
 - [Reproducibility](#reproducibility)
 - [Evaluation Scope](#evaluation-scope)
-- [License](#license)
-- [Citation](#citation)
 - [Reporting & Code Availability](#reporting--code-availability)
 - [Contact & Support](#contact--support)
 
