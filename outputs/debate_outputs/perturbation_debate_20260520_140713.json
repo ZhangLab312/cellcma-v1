@@ -1,0 +1,994 @@
+{
+  "task_type": "perturbation",
+  "data_name": "",
+  "total_rounds": 3,
+  "consensus_reached": true,
+  "final_consensus_score": 0.7570856477790027,
+  "expert_positions": {
+    "scientist": "support",
+    "engineer": "support",
+    "critic": "neutral"
+  },
+  "rounds": [
+    {
+      "round_num": 1,
+      "consensus_score": 0.6779669934399648,
+      "blueprint": {
+        "architecture_type": "Conditional compositional perturbation autoencoder with gene-wise cross-attention decoder",
+        "model_config": {
+          "input_representation": "log1p normalized control gene expression over highly variable genes with optional library size covariate",
+          "preprocessing": {
+            "use_hvg": true,
+            "n_hvg": 4000,
+            "retain_output_head_for_all_genes": true,
+            "size_factor_normalization": true,
+            "log_transform": true
+          },
+          "encoder": {
+            "type": "MLP",
+            "layers": [
+              4096,
+              2048,
+              1024,
+              512
+            ],
+            "activations": "GELU",
+            "dropout": 0.1,
+            "normalization": "LayerNorm",
+            "residual": true
+          },
+          "baseline_latent": {
+            "dim": 128,
+            "objective": "encode cell-intrinsic control state"
+          },
+          "perturbation_embedding": {
+            "type": "factorized_embedding",
+            "perturbation_id_dim": 64,
+            "dose_dim": 16,
+            "chemical_or_genetic_token_dim": 64,
+            "shared_perturbation_mlp": [
+              128,
+              128
+            ],
+            "ood_regularization": "embedding norm + mixup over perturbations"
+          },
+          "cell_type_embedding": {
+            "type": "learned_embedding",
+            "dim": 32,
+            "usage": "condition modulation and decoder gating"
+          },
+          "batch_embedding": {
+            "type": "learned_embedding",
+            "dim": 16
+          },
+          "compositional_effect_module": {
+            "type": "FiLM-conditioned residual transformer",
+            "n_blocks": 4,
+            "hidden_dim": 256,
+            "n_heads": 8,
+            "ffn_dim": 512,
+            "dropout": 0.1,
+            "inputs": [
+              "baseline_latent",
+              "perturbation_embedding",
+              "cell_type_embedding",
+              "batch_embedding"
+            ],
+            "output": "perturbation effect latent"
+          },
+          "disentanglement_strategy": {
+            "baseline_branch": "reconstructs control profile",
+            "effect_branch": "predicts delta from perturbation",
+            "adversarial_head": "remove perturbation signal from baseline latent and reduce cell-type leakage from effect latent",
+            "gradient_reversal": true
+          },
+          "decoder": {
+            "type": "dual-head decoder",
+            "delta_head": {
+              "type": "gene-wise cross-attention + MLP",
+              "gene_embedding_dim": 128,
+              "query_source": "all genes or HVGs",
+              "n_cross_attention_layers": 2,
+              "hidden_dim": 256
+            },
+            "expression_head": {
+              "type": "residual MLP",
+              "layers": [
+                512,
+                1024,
+                2048,
+                4000
+              ]
+            },
+            "output_parameterization": "predict control reconstruction, perturbation delta, and final perturbed expression"
+          },
+          "output_heads": {
+            "perturbed_expression": "all target genes",
+            "differential_expression": "predicted delta gene-wise",
+            "auxiliary_control_reconstruction": "yes",
+            "top_de_focus_head": "weighted auxiliary regression on top DE genes"
+          },
+          "training_strategy": {
+            "phase_1": "pretrain autoencoder on control + all cells for stable baseline manifold",
+            "phase_2": "joint perturbation training with paired/unpaired supervision",
+            "phase_3": "fine-tune with hard example mining for rare perturbations"
+          },
+          "regularization": {
+            "dropout": 0.1,
+            "weight_decay": 1e-05,
+            "latent_l2": 0.0001,
+            "mixup_in_latent": true,
+            "label_smoothing_for_perturbation_classifier": 0.05
+          },
+          "optimization": {
+            "optimizer": "AdamW",
+            "learning_rate": 0.0003,
+            "scheduler": "cosine with warmup",
+            "mixed_precision": true,
+            "gradient_checkpointing": false
+          },
+          "data_sampling": {
+            "batch_sampler": "stratified by cell type and perturbation",
+            "rare_perturbation_oversampling": true,
+            "paired_control_target_preference": true
+          }
+        },
+        "latent_dim": 128,
+        "loss_functions": [
+          "masked_huber_reconstruction_loss",
+          "weighted_mse_on_perturbed_expression",
+          "delta_prediction_loss",
+          "top_DE_gene_weighted_loss",
+          "KL_or_variance_regularization_on_latent",
+          "adversarial_disentanglement_loss",
+          "contrastive_cell_state_consistency_loss",
+          "batch_invariance_loss"
+        ],
+        "memory_requirements": {
+          "gpu_gb": 14.5,
+          "ram_gb": 64
+        },
+        "batch_size_recommendation": 512,
+        "reasoning": "A conditional compositional autoencoder is well matched to perturbation response prediction because it explicitly separates the baseline control state from the perturbation-induced effect, which is critical for estimating differential expression and handling cell type-specific responses. The encoder captures sparse high-dimensional control expression in a compact baseline latent, while the perturbation module learns transferable perturbation embeddings that can generalize better to rare perturbations. The FiLM-conditioned residual transformer allows non-linear interactions between baseline state, perturbation identity, dose, batch, and cell type without requiring a very large full-sequence transformer over genes, keeping compute efficient. A dual-head decoder predicts both the final perturbed expression and the perturbation delta, improving supervision and interpretability. Gene-wise cross-attention in the delta head helps model heterogeneous gene responses and prioritize top differentially expressed genes. Adversarial disentanglement encourages the baseline latent to represent cell state rather than perturbation identity and the effect latent to capture perturbation response with reduced nuisance leakage. With 47.38 GB GPU memory and over 1 TB RAM, this architecture comfortably fits hardware limits; using 4000 HVGs, hidden sizes up to 4096, latent 128, and batch size 512 in mixed precision should remain below about 14.5 GB GPU memory for training, while host RAM use around 64 GB covers dense matrices, dataloaders, and cached embeddings. If full-gene output exceeds memory because n_genes is very large, keep the encoder on 4000 HVGs and use chunked decoder heads over all genes during training/inference. This design is optimized for R², MSE, and Pearson on top DE genes by combining global reconstruction, delta-specific supervision, and explicit DE weighting."
+      },
+      "experts": [
+        {
+          "expert": "scientist",
+          "confidence": 0.87,
+          "reasoning": "From a theory perspective, this architecture is broadly sound for conditional perturbation response prediction. The key inductive bias—separating a cell-intrinsic baseline latent from a perturbation effect latent—is appropriate for estimating counterfactual expression and differential expression. The dual-head objective (reconstruction + delta prediction) improves identifiability relative to using only final-expression supervision, and conditioning on cell type/batch/dose via FiLM is mathematically sensible for modeling heterogeneous, non-linear response functions. Gene-wise cross-attention is also a reasonable mechanism for high-dimensional outputs because it provides gene-specific decoding capacity without a full dense gene-to-gene transformation everywhere.\n\nHowever, the theoretical soundness depends on whether the disentanglement objectives are balanced. Adversarial removal of perturbation signal from the baseline latent and cell-type leakage from the effect latent is conceptually correct, but such objectives are often non-identifiable: multiple latent factorizations can explain the same data, and gradient reversal can create unstable optimization or collapse if the discriminator is too strong. The KL/variance regularization is also potentially problematic if this is not a true VAE-style probabilistic model; forcing variance constraints without a coherent generative prior may reduce expressiveness without giving guaranteed identifiability. The mixup over perturbations is only valid if perturbation effects are approximately locally linear in embedding space, which may fail for combinatorial or thresholded biological responses.\n\nOverall, the model has strong representational capacity and a sensible decomposition for the task, but its theoretical weaknesses lie in identifiability, adversarial stability, and the assumption that perturbation effects compose smoothly in latent space.",
+          "content": {
+            "position": "support",
+            "confidence": 0.87,
+            "reasoning": "From a theory perspective, this architecture is broadly sound for conditional perturbation response prediction. The key inductive bias—separating a cell-intrinsic baseline latent from a perturbation effect latent—is appropriate for estimating counterfactual expression and differential expression. The dual-head objective (reconstruction + delta prediction) improves identifiability relative to using only final-expression supervision, and conditioning on cell type/batch/dose via FiLM is mathematically sensible for modeling heterogeneous, non-linear response functions. Gene-wise cross-attention is also a reasonable mechanism for high-dimensional outputs because it provides gene-specific decoding capacity without a full dense gene-to-gene transformation everywhere.\n\nHowever, the theoretical soundness depends on whether the disentanglement objectives are balanced. Adversarial removal of perturbation signal from the baseline latent and cell-type leakage from the effect latent is conceptually correct, but such objectives are often non-identifiable: multiple latent factorizations can explain the same data, and gradient reversal can create unstable optimization or collapse if the discriminator is too strong. The KL/variance regularization is also potentially problematic if this is not a true VAE-style probabilistic model; forcing variance constraints without a coherent generative prior may reduce expressiveness without giving guaranteed identifiability. The mixup over perturbations is only valid if perturbation effects are approximately locally linear in embedding space, which may fail for combinatorial or thresholded biological responses.\n\nOverall, the model has strong representational capacity and a sensible decomposition for the task, but its theoretical weaknesses lie in identifiability, adversarial stability, and the assumption that perturbation effects compose smoothly in latent space.",
+            "theoretical_concerns": [
+              "Latent identifiability issue in baseline/effect disentanglement",
+              "Adversarial training instability with gradient reversal",
+              "Potential posterior collapse or over-regularization if KL/variance term is used without a proper probabilistic encoder",
+              "Nonlinear perturbation compositionality may invalidate latent mixup assumptions",
+              "High-capacity decoder may overfit rare perturbations and weakly identified gene-specific effects",
+              "Batch invariance and cell-type invariance objectives may conflict with legitimate biological signal"
+            ],
+            "suggestions": [
+              "Use a probabilistic latent formulation with an explicit ELBO if KL regularization is intended",
+              "Replace hard adversarial disentanglement with orthogonality or mutual-information penalties for more stable optimization",
+              "Apply KL annealing or free-bits to reduce collapse risk",
+              "Constrain perturbation composition with a structured additive model plus residual nonlinearity",
+              "Add calibration or uncertainty estimation for rare perturbations",
+              "Use gene-set or pathway-level auxiliary losses to improve statistical efficiency and reduce overfitting",
+              "Validate invariance objectives carefully to avoid removing true cell-type-specific biology"
+            ]
+          },
+          "suggestions": [
+            "Use a probabilistic latent formulation with an explicit ELBO if KL regularization is intended",
+            "Replace hard adversarial disentanglement with orthogonality or mutual-information penalties for more stable optimization",
+            "Apply KL annealing or free-bits to reduce collapse risk",
+            "Constrain perturbation composition with a structured additive model plus residual nonlinearity",
+            "Add calibration or uncertainty estimation for rare perturbations",
+            "Use gene-set or pathway-level auxiliary losses to improve statistical efficiency and reduce overfitting",
+            "Validate invariance objectives carefully to avoid removing true cell-type-specific biology"
+          ],
+          "concerns": [
+            "Latent identifiability issue in baseline/effect disentanglement",
+            "Adversarial training instability with gradient reversal",
+            "Potential posterior collapse or over-regularization if KL/variance term is used without a proper probabilistic encoder",
+            "Nonlinear perturbation compositionality may invalidate latent mixup assumptions",
+            "High-capacity decoder may overfit rare perturbations and weakly identified gene-specific effects",
+            "Batch invariance and cell-type invariance objectives may conflict with legitimate biological signal"
+          ]
+        },
+        {
+          "expert": "engineer",
+          "confidence": 0.86,
+          "reasoning": "The proposed conditional compositional autoencoder is practically feasible and well aligned with perturbation response prediction. Separating baseline control state, perturbation embedding, and effect latent directly addresses the core modeling need: disentangling cell-intrinsic expression from perturbation-induced delta. The design is computationally reasonable for 4k HVGs with 128-dim latent and MLP/FiLM blocks, and the gene-wise decoder is acceptable if implemented in chunked form. The main feasibility constraint is the full-gene output head: if n_genes is large, a dense 4000->2048->...->n_genes head can become memory- and compute-heavy, but this is manageable with minibatched gene chunks or low-rank/output-factorized decoding. Mixed precision, stratified sampling, and perturbation oversampling are appropriate for the expected training regime. The adversarial disentanglement and contrastive losses are implementable, but they add tuning complexity and can destabilize training if weighted too strongly. Overall, this is a strong and implementable architecture, though not trivial to train robustly.",
+          "content": {
+            "position": "support",
+            "confidence": 0.86,
+            "reasoning": "The proposed conditional compositional autoencoder is practically feasible and well aligned with perturbation response prediction. Separating baseline control state, perturbation embedding, and effect latent directly addresses the core modeling need: disentangling cell-intrinsic expression from perturbation-induced delta. The design is computationally reasonable for 4k HVGs with 128-dim latent and MLP/FiLM blocks, and the gene-wise decoder is acceptable if implemented in chunked form. The main feasibility constraint is the full-gene output head: if n_genes is large, a dense 4000->2048->...->n_genes head can become memory- and compute-heavy, but this is manageable with minibatched gene chunks or low-rank/output-factorized decoding. Mixed precision, stratified sampling, and perturbation oversampling are appropriate for the expected training regime. The adversarial disentanglement and contrastive losses are implementable, but they add tuning complexity and can destabilize training if weighted too strongly. Overall, this is a strong and implementable architecture, though not trivial to train robustly.",
+            "concerns": [
+              "Gene-wise cross-attention over all genes can become expensive if implemented naively; complexity and memory may grow quickly with n_genes.",
+              "The dual-head decoder plus adversarial disentanglement introduces loss-balancing instability and sensitivity to hyperparameters.",
+              "Rare perturbation oversampling may increase overfitting unless paired with strong regularization and careful validation.",
+              "Full-gene output reconstruction may dominate training and dilute top-DE performance without careful loss weighting.",
+              "Batch effects and cell-type imbalance can still leak into the latent space despite adversarial objectives.",
+              "The stated 14.5 GB GPU estimate may be optimistic if batch size 512 is used with all heads active and full-gene decoding."
+            ],
+            "suggestions": [
+              "Use chunked or factorized gene decoding for the all-gene head to reduce peak memory.",
+              "Start with the baseline autoencoder and perturbation delta head only, then add adversarial and contrastive losses incrementally.",
+              "Use dynamic loss weighting or uncertainty-based weighting across reconstruction, delta, and DE objectives.",
+              "Consider low-rank output projection or gene-set-based decoder initialization to improve efficiency.",
+              "Apply gradient checkpointing if full-gene decoding or larger batch sizes are required.",
+              "Validate with ablations on cell-type conditioning, perturbation embedding, and top-DE weighting to confirm each component helps."
+            ],
+            "estimated_memory_gb": 16.8,
+            "estimated_training_time": "Moderate: ~12-36 hours on a single modern GPU for medium-sized datasets; longer for very large multi-batch datasets or if full-gene decoding is not chunked"
+          },
+          "suggestions": [
+            "Use chunked or factorized gene decoding for the all-gene head to reduce peak memory.",
+            "Start with the baseline autoencoder and perturbation delta head only, then add adversarial and contrastive losses incrementally.",
+            "Use dynamic loss weighting or uncertainty-based weighting across reconstruction, delta, and DE objectives.",
+            "Consider low-rank output projection or gene-set-based decoder initialization to improve efficiency.",
+            "Apply gradient checkpointing if full-gene decoding or larger batch sizes are required.",
+            "Validate with ablations on cell-type conditioning, perturbation embedding, and top-DE weighting to confirm each component helps."
+          ],
+          "concerns": [
+            "Gene-wise cross-attention over all genes can become expensive if implemented naively; complexity and memory may grow quickly with n_genes.",
+            "The dual-head decoder plus adversarial disentanglement introduces loss-balancing instability and sensitivity to hyperparameters.",
+            "Rare perturbation oversampling may increase overfitting unless paired with strong regularization and careful validation.",
+            "Full-gene output reconstruction may dominate training and dilute top-DE performance without careful loss weighting.",
+            "Batch effects and cell-type imbalance can still leak into the latent space despite adversarial objectives.",
+            "The stated 14.5 GB GPU estimate may be optimistic if batch size 512 is used with all heads active and full-gene decoding."
+          ]
+        },
+        {
+          "expert": "critic",
+          "confidence": 0.88,
+          "reasoning": "Compared with established perturbation methods like CPA, scGen, GEARS, and scVIDR, this design is broadly competitive and conceptually well aligned with the task: it explicitly separates baseline cell state from perturbation effect, supports compositional conditioning (cell type, dose, batch), and adds DE-focused supervision. That is stronger than plain autoencoder baselines and closer in spirit to CPA/scGen than to graph-based methods like GEARS. However, several components are methodologically fragile: adversarial disentanglement is often difficult to tune and can remove biologically meaningful signal; mixup in perturbation space and hard example mining may help interpolation but are not well validated for out-of-distribution perturbations; and a gene-wise cross-attention decoder plus dual heads increases complexity without guaranteeing better generalization than simpler decoder heads. The architecture may work well on benchmark datasets with repeated cell types and perturbations, but its ability to generalize to rare drugs, unseen genetic perturbations, or strong cell-state shifts is still uncertain. Compared with GEARS, it likely handles cell-type conditioning more naturally but lacks explicit gene regulatory graph priors. Compared with scGen, it is more expressive, but also more hyperparameter-sensitive and harder to reproduce. Overall, it is a strong but somewhat over-engineered perturbation model with good benchmark fit and notable risk of overfitting or brittle disentanglement.",
+          "content": {
+            "position": "neutral",
+            "confidence": 0.88,
+            "reasoning": "Compared with established perturbation methods like CPA, scGen, GEARS, and scVIDR, this design is broadly competitive and conceptually well aligned with the task: it explicitly separates baseline cell state from perturbation effect, supports compositional conditioning (cell type, dose, batch), and adds DE-focused supervision. That is stronger than plain autoencoder baselines and closer in spirit to CPA/scGen than to graph-based methods like GEARS. However, several components are methodologically fragile: adversarial disentanglement is often difficult to tune and can remove biologically meaningful signal; mixup in perturbation space and hard example mining may help interpolation but are not well validated for out-of-distribution perturbations; and a gene-wise cross-attention decoder plus dual heads increases complexity without guaranteeing better generalization than simpler decoder heads. The architecture may work well on benchmark datasets with repeated cell types and perturbations, but its ability to generalize to rare drugs, unseen genetic perturbations, or strong cell-state shifts is still uncertain. Compared with GEARS, it likely handles cell-type conditioning more naturally but lacks explicit gene regulatory graph priors. Compared with scGen, it is more expressive, but also more hyperparameter-sensitive and harder to reproduce. Overall, it is a strong but somewhat over-engineered perturbation model with good benchmark fit and notable risk of overfitting or brittle disentanglement.",
+            "limitations": [
+              "Adversarial disentanglement can be unstable and may suppress legitimate biology rather than only nuisance signal.",
+              "Gene-wise cross-attention and multiple auxiliary losses increase tuning burden and reproducibility risk.",
+              "Mixup over perturbations assumes smooth compositionality that may not hold for non-additive or synergistic perturbations.",
+              "Generalization to unseen perturbations, especially rare genetic knockouts or novel chemicals, is not guaranteed.",
+              "No explicit mechanistic prior (e.g., gene network/GRN) limits interpretability and may hurt sample efficiency versus graph-based methods.",
+              "Full-gene prediction from HVG-based encoding can bias outputs toward highly variable genes and miss low-variance but important markers.",
+              "Batch and cell-type embeddings may partially confound biological effect if training data are imbalanced.",
+              "Dual prediction of control, delta, and final expression may lead to inconsistent outputs unless carefully calibrated."
+            ],
+            "comparison_notes": [
+              "Versus CPA: similar conditional perturbation modeling, but this blueprint is more expressive with transformer conditioning and gene-wise decoding; likely better fit on complex benchmarks, but more fragile.",
+              "Versus scGen: much richer conditioning and disentanglement machinery, but scGen is simpler and often easier to reproduce and debug.",
+              "Versus GEARS: this model lacks explicit gene-regulatory graph structure, so it may underperform when network priors are important or data are sparse.",
+              "Versus scVIDR: more suitable for compositional and multi-factor perturbations, but less lightweight.",
+              "Versus linear/additive baselines: clearly superior for non-linear responses, but less interpretable and more data-hungry.",
+              "Compared with DE-weighted evaluation benchmarks: the top-DE auxiliary head is a good match, but may over-optimize benchmark-specific metrics rather than global transcriptomic fidelity."
+            ],
+            "suggestions": [
+              "Add an explicit gene network prior or pathway-level module to improve sample efficiency and interpretability.",
+              "Use uncertainty estimation for rare perturbations to avoid overconfident extrapolation.",
+              "Reduce reliance on adversarial disentanglement; consider weaker invariance penalties or supervised nuisance removal.",
+              "Validate on unseen cell types, unseen perturbation classes, and cross-dataset transfer, not only random splits.",
+              "Ablate the cross-attention decoder and dual heads; a simpler decoder may generalize better.",
+              "Constrain delta prediction and final-expression prediction for consistency.",
+              "Report calibration and rank-based metrics on DE genes in addition to R²/MSE/Pearson.",
+              "If training data are small, replace some learned embeddings with factorized or shared perturbation representations to reduce overfitting."
+            ]
+          },
+          "suggestions": [
+            "Add an explicit gene network prior or pathway-level module to improve sample efficiency and interpretability.",
+            "Use uncertainty estimation for rare perturbations to avoid overconfident extrapolation.",
+            "Reduce reliance on adversarial disentanglement; consider weaker invariance penalties or supervised nuisance removal.",
+            "Validate on unseen cell types, unseen perturbation classes, and cross-dataset transfer, not only random splits.",
+            "Ablate the cross-attention decoder and dual heads; a simpler decoder may generalize better.",
+            "Constrain delta prediction and final-expression prediction for consistency.",
+            "Report calibration and rank-based metrics on DE genes in addition to R²/MSE/Pearson.",
+            "If training data are small, replace some learned embeddings with factorized or shared perturbation representations to reduce overfitting."
+          ],
+          "concerns": [
+            "Adversarial disentanglement can be unstable and may suppress legitimate biology rather than only nuisance signal.",
+            "Gene-wise cross-attention and multiple auxiliary losses increase tuning burden and reproducibility risk.",
+            "Mixup over perturbations assumes smooth compositionality that may not hold for non-additive or synergistic perturbations.",
+            "Generalization to unseen perturbations, especially rare genetic knockouts or novel chemicals, is not guaranteed.",
+            "No explicit mechanistic prior (e.g., gene network/GRN) limits interpretability and may hurt sample efficiency versus graph-based methods.",
+            "Full-gene prediction from HVG-based encoding can bias outputs toward highly variable genes and miss low-variance but important markers.",
+            "Batch and cell-type embeddings may partially confound biological effect if training data are imbalanced.",
+            "Dual prediction of control, delta, and final expression may lead to inconsistent outputs unless carefully calibrated.",
+            "Versus CPA: similar conditional perturbation modeling, but this blueprint is more expressive with transformer conditioning and gene-wise decoding; likely better fit on complex benchmarks, but more fragile.",
+            "Versus scGen: much richer conditioning and disentanglement machinery, but scGen is simpler and often easier to reproduce and debug.",
+            "Versus GEARS: this model lacks explicit gene-regulatory graph structure, so it may underperform when network priors are important or data are sparse.",
+            "Versus scVIDR: more suitable for compositional and multi-factor perturbations, but less lightweight.",
+            "Versus linear/additive baselines: clearly superior for non-linear responses, but less interpretable and more data-hungry.",
+            "Compared with DE-weighted evaluation benchmarks: the top-DE auxiliary head is a good match, but may over-optimize benchmark-specific metrics rather than global transcriptomic fidelity."
+          ]
+        }
+      ],
+      "timestamp": "2026-05-20T14:05:19.664287"
+    },
+    {
+      "round_num": 2,
+      "consensus_score": 0.5113168172722617,
+      "blueprint": {
+        "architecture_type": "Probabilistic conditional compositional perturbation VAE with pathway-aware factorized decoder",
+        "model_config": {
+          "input_representation": "log1p normalized control expression over 4000 HVGs plus library size, cell type, batch, perturbation id, modality (chemical/genetic), and dose covariates",
+          "preprocessing": {
+            "use_hvg": true,
+            "n_hvg": 4000,
+            "retain_output_head_for_all_genes": true,
+            "size_factor_normalization": true,
+            "log_transform": true,
+            "gene_chunked_decoding": true,
+            "chunk_size_genes": 1024
+          },
+          "encoder": {
+            "type": "probabilistic_mlp",
+            "layers": [
+              2048,
+              1024,
+              512
+            ],
+            "activations": "GELU",
+            "dropout": 0.1,
+            "normalization": "LayerNorm",
+            "residual": true,
+            "posterior": "mean_logvar",
+            "kl_annealing": true,
+            "free_bits": 0.5
+          },
+          "baseline_latent": {
+            "dim": 96,
+            "objective": "encode cell-intrinsic control state",
+            "regularization": "orthogonality_to_effect_latent"
+          },
+          "perturbation_embedding": {
+            "type": "factorized_embedding",
+            "perturbation_id_dim": 48,
+            "dose_dim": 16,
+            "chemical_or_genetic_token_dim": 32,
+            "shared_perturbation_mlp": [
+              96,
+              96
+            ],
+            "ood_regularization": "embedding_norm + hierarchical grouping by perturbation class"
+          },
+          "cell_type_embedding": {
+            "type": "learned_embedding",
+            "dim": 32,
+            "usage": "condition modulation and decoder gating"
+          },
+          "batch_embedding": {
+            "type": "learned_embedding",
+            "dim": 16
+          },
+          "pathway_module": {
+            "type": "low_rank_pathway_adapter",
+            "pathway_dim": 64,
+            "uses_gene_sets": true,
+            "purpose": "sample-efficient inductive bias and interpretability"
+          },
+          "effect_module": {
+            "type": "fiLM_residual_mlp",
+            "n_blocks": 3,
+            "hidden_dim": 192,
+            "n_heads": 4,
+            "ffn_dim": 384,
+            "dropout": 0.1,
+            "inputs": [
+              "baseline_latent",
+              "perturbation_embedding",
+              "cell_type_embedding",
+              "batch_embedding",
+              "pathway_module"
+            ],
+            "output": "perturbation effect latent"
+          },
+          "disentanglement_strategy": {
+            "baseline_branch": "reconstructs control profile",
+            "effect_branch": "predicts delta from perturbation",
+            "penalty": "orthogonality + mutual_information_penalty",
+            "gradient_reversal": false,
+            "reason": "more stable than hard adversarial training"
+          },
+          "decoder": {
+            "type": "dual_head_factorized_decoder",
+            "delta_head": {
+              "type": "gene_chunk_decoder_with_gene_embeddings",
+              "gene_embedding_dim": 64,
+              "query_source": "all genes",
+              "n_cross_attention_layers": 1,
+              "hidden_dim": 192,
+              "low_rank_output_factorization": true
+            },
+            "expression_head": {
+              "type": "residual_mlp",
+              "layers": [
+                384,
+                768,
+                1536
+              ]
+            },
+            "output_parameterization": "predict control reconstruction, perturbation delta, and final perturbed expression"
+          },
+          "uncertainty_head": {
+            "type": "heteroscedastic_regression",
+            "outputs": "per-gene variance for rare perturbations",
+            "usage": "downweight overconfident extrapolation"
+          },
+          "output_heads": {
+            "perturbed_expression": "all target genes",
+            "differential_expression": "predicted delta gene-wise",
+            "auxiliary_control_reconstruction": "yes",
+            "top_de_focus_head": "weighted auxiliary regression on top DE genes"
+          },
+          "training_strategy": {
+            "phase_1": "pretrain probabilistic autoencoder on control + all cells",
+            "phase_2": "joint perturbation training with paired/unpaired supervision",
+            "phase_3": "fine-tune with hard example mining for rare perturbations and calibrated uncertainty",
+            "curriculum": "start with reconstruction + delta, then add pathway and invariance terms"
+          },
+          "regularization": {
+            "dropout": 0.1,
+            "weight_decay": 1e-05,
+            "latent_l2": 0.0001,
+            "latent_orthogonality": true,
+            "mixup_in_latent": "restricted_to_similar_perturbation_families",
+            "label_smoothing_for_perturbation_classifier": 0.05
+          },
+          "optimization": {
+            "optimizer": "AdamW",
+            "learning_rate": 0.0003,
+            "scheduler": "cosine with warmup",
+            "mixed_precision": true,
+            "gradient_checkpointing": true,
+            "dynamic_loss_weighting": true
+          },
+          "data_sampling": {
+            "batch_sampler": "stratified by cell type and perturbation",
+            "rare_perturbation_oversampling": true,
+            "paired_control_target_preference": true,
+            "streaming_for_large_datasets": true
+          }
+        },
+        "latent_dim": 96,
+        "loss_functions": [
+          "masked_huber_reconstruction_loss",
+          "weighted_mse_on_perturbed_expression",
+          "delta_prediction_loss",
+          "top_DE_gene_weighted_loss",
+          "kl_divergence_with_annealing",
+          "orthogonality_penalty_between_baseline_and_effect_latents",
+          "mutual_information_penalty",
+          "pathway_consistency_loss",
+          "heteroscedastic_nll_loss",
+          "uncertainty_calibration_loss"
+        ],
+        "memory_requirements": {
+          "gpu_gb": 10.5,
+          "ram_gb": 32
+        },
+        "batch_size_recommendation": 256,
+        "reasoning": "This revision keeps the strong baseline/effect decomposition while addressing the three expert concerns. For theory, it replaces brittle hard adversarial disentanglement with a probabilistic latent encoder plus KL annealing/free-bits, orthogonality, and mutual-information penalties, which is more stable and less likely to collapse. The model is now a true conditional VAE-style formulation, so the KL term is coherent rather than ad hoc. For methodology, it adds a pathway-aware low-rank adapter to improve sample efficiency and align with known gene programs, making it more competitive with graph-/pathway-informed perturbation models. It also adds uncertainty estimation for rare perturbations, which helps avoid overconfident extrapolation. For engineering, the decoder is factorized and gene-chunked, reducing peak memory versus naive all-gene cross-attention; cross-attention depth and hidden sizes are smaller; gradient checkpointing and mixed precision are enabled; and streaming/stratified sampling is included for scalability. The latent size is reduced to 96 to better fit the data complexity while maintaining expressiveness. Estimated training footprint is about 10.5 GB GPU and 32 GB RAM with batch size 256, which is safer and easier to tune than the original blueprint. Overall, this design remains strong for R², MSE, and Pearson on top DE genes while being more theoretically defensible, more reproducible, and more hardware-efficient."
+      },
+      "experts": [
+        {
+          "expert": "scientist",
+          "confidence": 0.8,
+          "reasoning": "From a theoretical ML perspective, the design is broadly plausible and substantially more coherent than an ad hoc perturbation predictor, but it is not fully clean in terms of objective consistency and identifiability. The strongest aspect is the explicit conditional latent decomposition: a baseline latent for control-state variation and an effect pathway conditioned on perturbation, cell type, dose, and batch. This matches the causal factorization the task informally suggests and can improve sample efficiency if the decomposition is approximately correct. Using a VAE-style encoder with KL annealing and free bits is also theoretically reasonable for stabilizing latent usage and reducing posterior collapse risk compared with a plain autoencoder or hard adversarial disentanglement.\n\nHowever, several theoretical issues remain. First, the architecture combines many losses that are not obviously derived from a single probabilistic model: masked Huber reconstruction, weighted MSE, delta loss, top-DE weighted loss, KL, orthogonality, mutual-information penalty, pathway consistency, heteroscedastic NLL, and calibration loss. This creates an objective with competing gradients and no clear guarantee that optimization converges to a representation aligned with the intended semantics. In particular, if both deterministic weighted regression losses and heteroscedastic NLL are applied to the same outputs, the model may face inconsistent incentives unless the regression terms are carefully interpreted as auxiliary objectives.\n\nSecond, the disentanglement claim is only partially justified. Orthogonality between latent vectors does not imply statistical independence or semantic separation, and mutual-information penalties are notoriously hard to estimate reliably in high dimensions. Without stronger structural assumptions or interventions, the decomposition into baseline and perturbation effect is generally non-identifiable: the model can rotate or redistribute information between branches while preserving reconstruction quality. So the architecture may learn a useful factorization, but theory does not guarantee that the baseline latent truly encodes only intrinsic state and the effect latent only perturbation response.\n\nThird, the decoder and loss setup may weaken the generative interpretation. The input is log1p-normalized expression, while outputs mix control reconstruction, delta prediction, and final perturbed expression. For gene expression, additive delta prediction in transformed space is convenient but not always statistically natural; perturbation effects in log space may be reasonable, yet the probabilistic assumptions should match the observation model. If the model is called probabilistic, one would prefer a clearly specified conditional likelihood for perturbed expression, with auxiliary heads justified as variational or multitask terms rather than a collection of heuristics.\n\nFourth, latent dimension 96 is not obviously wrong, but its adequacy is data-regime dependent. For 4000 HVGs plus covariates, 96 dimensions may be enough if responses lie near a low-dimensional manifold, but with many cell types, perturbations, doses, and batch effects, the effective intrinsic complexity may be larger. Conversely, given limited observations for rare perturbations, the full model capacity is quite high, especially with large encoder/decoder MLPs and multiple embedding modules, so overfitting and shortcut learning remain realistic concerns.\n\nOn optimization, AdamW with warmup and cosine decay is empirically standard, but there is no special convergence guarantee here because the training problem is highly non-convex and the dynamic loss weighting further changes the landscape over time. Curriculum learning may help by reducing early gradient conflict, but it also makes the learned solution path dependent. Gradient flow should be acceptable due to residual connections, LayerNorm, GELU, moderate depth, and FiLM conditioning, so vanishing gradients are unlikely to be the primary failure mode.\n\nOverall, the architecture is theoretically defensible as a rich conditional representation learner, but not theoretically clean as a principled probabilistic model with identifiable disentanglement. I would support it as a pragmatic design, yet with caution: success depends heavily on careful loss balancing, probabilistic consistency, and empirical checks for collapse or entanglement.",
+          "content": {
+            "position": "neutral",
+            "confidence": 0.8,
+            "reasoning": "From a theoretical ML perspective, the design is broadly plausible and substantially more coherent than an ad hoc perturbation predictor, but it is not fully clean in terms of objective consistency and identifiability. The strongest aspect is the explicit conditional latent decomposition: a baseline latent for control-state variation and an effect pathway conditioned on perturbation, cell type, dose, and batch. This matches the causal factorization the task informally suggests and can improve sample efficiency if the decomposition is approximately correct. Using a VAE-style encoder with KL annealing and free bits is also theoretically reasonable for stabilizing latent usage and reducing posterior collapse risk compared with a plain autoencoder or hard adversarial disentanglement.\n\nHowever, several theoretical issues remain. First, the architecture combines many losses that are not obviously derived from a single probabilistic model: masked Huber reconstruction, weighted MSE, delta loss, top-DE weighted loss, KL, orthogonality, mutual-information penalty, pathway consistency, heteroscedastic NLL, and calibration loss. This creates an objective with competing gradients and no clear guarantee that optimization converges to a representation aligned with the intended semantics. In particular, if both deterministic weighted regression losses and heteroscedastic NLL are applied to the same outputs, the model may face inconsistent incentives unless the regression terms are carefully interpreted as auxiliary objectives.\n\nSecond, the disentanglement claim is only partially justified. Orthogonality between latent vectors does not imply statistical independence or semantic separation, and mutual-information penalties are notoriously hard to estimate reliably in high dimensions. Without stronger structural assumptions or interventions, the decomposition into baseline and perturbation effect is generally non-identifiable: the model can rotate or redistribute information between branches while preserving reconstruction quality. So the architecture may learn a useful factorization, but theory does not guarantee that the baseline latent truly encodes only intrinsic state and the effect latent only perturbation response.\n\nThird, the decoder and loss setup may weaken the generative interpretation. The input is log1p-normalized expression, while outputs mix control reconstruction, delta prediction, and final perturbed expression. For gene expression, additive delta prediction in transformed space is convenient but not always statistically natural; perturbation effects in log space may be reasonable, yet the probabilistic assumptions should match the observation model. If the model is called probabilistic, one would prefer a clearly specified conditional likelihood for perturbed expression, with auxiliary heads justified as variational or multitask terms rather than a collection of heuristics.\n\nFourth, latent dimension 96 is not obviously wrong, but its adequacy is data-regime dependent. For 4000 HVGs plus covariates, 96 dimensions may be enough if responses lie near a low-dimensional manifold, but with many cell types, perturbations, doses, and batch effects, the effective intrinsic complexity may be larger. Conversely, given limited observations for rare perturbations, the full model capacity is quite high, especially with large encoder/decoder MLPs and multiple embedding modules, so overfitting and shortcut learning remain realistic concerns.\n\nOn optimization, AdamW with warmup and cosine decay is empirically standard, but there is no special convergence guarantee here because the training problem is highly non-convex and the dynamic loss weighting further changes the landscape over time. Curriculum learning may help by reducing early gradient conflict, but it also makes the learned solution path dependent. Gradient flow should be acceptable due to residual connections, LayerNorm, GELU, moderate depth, and FiLM conditioning, so vanishing gradients are unlikely to be the primary failure mode.\n\nOverall, the architecture is theoretically defensible as a rich conditional representation learner, but not theoretically clean as a principled probabilistic model with identifiable disentanglement. I would support it as a pragmatic design, yet with caution: success depends heavily on careful loss balancing, probabilistic consistency, and empirical checks for collapse or entanglement.",
+            "theoretical_concerns": [
+              "Objective inconsistency: the combination of Huber, weighted MSE, delta regression, top-DE weighting, heteroscedastic NLL, and calibration losses is not obviously derived from a single coherent likelihood or ELBO",
+              "Non-identifiability of disentanglement: baseline and effect latents are not theoretically identifiable from reconstruction and prediction objectives alone",
+              "Orthogonality does not imply independence: latent orthogonality can be satisfied while information remains entangled",
+              "Mutual-information penalty estimation risk: MI regularizers in high dimensions are often biased/noisy and can introduce unstable gradients",
+              "Posterior collapse risk remains: despite KL annealing and free bits, a strong decoder and many auxiliary deterministic pathways can reduce pressure to use the stochastic latent",
+              "Likelihood mismatch: additive delta prediction on log1p-normalized expression may not align with a principled observation model for gene expression",
+              "Gradient interference across tasks: reconstruction, delta prediction, top-DE emphasis, pathway consistency, and uncertainty calibration can induce conflicting optimization directions",
+              "Potential overcapacity relative to rare perturbation data: multiple embeddings, pathway adapter, FiLM blocks, and dual decoders may overfit under sparse condition coverage",
+              "Dynamic loss weighting path dependence: changing task weights during optimization can alter the learned solution without theoretical convergence guarantees to the intended optimum",
+              "Heteroscedastic variance degeneracy risk: without constraints, the uncertainty head can inflate variance to reduce NLL rather than improve mean prediction quality"
+            ],
+            "suggestions": [
+              "Define a single primary probabilistic objective, ideally a conditional ELBO or conditional likelihood for perturbed expression, and treat other terms as clearly secondary auxiliary regularizers",
+              "Use one statistically consistent reconstruction target per output head; if heteroscedastic NLL is the main likelihood, reduce redundant MSE-style losses on the same target",
+              "Constrain the uncertainty head with variance floors, upper regularization, or evidential-style penalties to avoid trivial large-variance solutions",
+              "Strengthen disentanglement via structural conditioning: restrict baseline latent access to perturbation labels and effect branch access to control reconstruction, rather than relying mainly on orthogonality penalties",
+              "Consider a conditional prior p(z_baseline | cell type, batch) or p(z_effect | perturbation class, dose) to make the latent semantics more probabilistically explicit",
+              "Use KL capacity control or cyclical/monotone KL schedules and monitor latent usage to reduce posterior collapse",
+              "Replace or supplement mutual-information penalties with simpler invariant-risk or cross-reconstruction constraints if MI estimation proves unstable",
+              "Add gradient conflict mitigation such as PCGrad or uncertainty-based principled multitask weighting if many supervised heads are retained",
+              "Validate whether 96 latent dimensions are sufficient by monitoring reconstruction/prediction saturation and mutual information with outputs; adapt latent size to measured intrinsic complexity",
+              "Prefer a noise model more aligned with expression statistics if raw counts are available, such as negative binomial or log-normal conditional likelihoods, rather than relying purely on transformed-space regression",
+              "Tie pathway regularization to sparse or low-rank constraints with explicit capacity control so the pathway module acts as a true inductive bias instead of another unconstrained feature block",
+              "Perform ablations on the disentanglement penalties and decoder strength to ensure the stochastic latent is actually used and not bypassed by deterministic conditioning paths"
+            ]
+          },
+          "suggestions": [
+            "Define a single primary probabilistic objective, ideally a conditional ELBO or conditional likelihood for perturbed expression, and treat other terms as clearly secondary auxiliary regularizers",
+            "Use one statistically consistent reconstruction target per output head; if heteroscedastic NLL is the main likelihood, reduce redundant MSE-style losses on the same target",
+            "Constrain the uncertainty head with variance floors, upper regularization, or evidential-style penalties to avoid trivial large-variance solutions",
+            "Strengthen disentanglement via structural conditioning: restrict baseline latent access to perturbation labels and effect branch access to control reconstruction, rather than relying mainly on orthogonality penalties",
+            "Consider a conditional prior p(z_baseline | cell type, batch) or p(z_effect | perturbation class, dose) to make the latent semantics more probabilistically explicit",
+            "Use KL capacity control or cyclical/monotone KL schedules and monitor latent usage to reduce posterior collapse",
+            "Replace or supplement mutual-information penalties with simpler invariant-risk or cross-reconstruction constraints if MI estimation proves unstable",
+            "Add gradient conflict mitigation such as PCGrad or uncertainty-based principled multitask weighting if many supervised heads are retained",
+            "Validate whether 96 latent dimensions are sufficient by monitoring reconstruction/prediction saturation and mutual information with outputs; adapt latent size to measured intrinsic complexity",
+            "Prefer a noise model more aligned with expression statistics if raw counts are available, such as negative binomial or log-normal conditional likelihoods, rather than relying purely on transformed-space regression",
+            "Tie pathway regularization to sparse or low-rank constraints with explicit capacity control so the pathway module acts as a true inductive bias instead of another unconstrained feature block",
+            "Perform ablations on the disentanglement penalties and decoder strength to ensure the stochastic latent is actually used and not bypassed by deterministic conditioning paths"
+          ],
+          "concerns": [
+            "Objective inconsistency: the combination of Huber, weighted MSE, delta regression, top-DE weighting, heteroscedastic NLL, and calibration losses is not obviously derived from a single coherent likelihood or ELBO",
+            "Non-identifiability of disentanglement: baseline and effect latents are not theoretically identifiable from reconstruction and prediction objectives alone",
+            "Orthogonality does not imply independence: latent orthogonality can be satisfied while information remains entangled",
+            "Mutual-information penalty estimation risk: MI regularizers in high dimensions are often biased/noisy and can introduce unstable gradients",
+            "Posterior collapse risk remains: despite KL annealing and free bits, a strong decoder and many auxiliary deterministic pathways can reduce pressure to use the stochastic latent",
+            "Likelihood mismatch: additive delta prediction on log1p-normalized expression may not align with a principled observation model for gene expression",
+            "Gradient interference across tasks: reconstruction, delta prediction, top-DE emphasis, pathway consistency, and uncertainty calibration can induce conflicting optimization directions",
+            "Potential overcapacity relative to rare perturbation data: multiple embeddings, pathway adapter, FiLM blocks, and dual decoders may overfit under sparse condition coverage",
+            "Dynamic loss weighting path dependence: changing task weights during optimization can alter the learned solution without theoretical convergence guarantees to the intended optimum",
+            "Heteroscedastic variance degeneracy risk: without constraints, the uncertainty head can inflate variance to reduce NLL rather than improve mean prediction quality"
+          ]
+        },
+        {
+          "expert": "engineer",
+          "confidence": 0.83,
+          "reasoning": "The architecture is implementable and technically well aligned with perturbation response prediction, but it is over-composed relative to the amount of information typically available in single-cell perturbation datasets. The strongest aspects are the baseline/effect factorization, conditional perturbation conditioning, pathway-aware inductive bias, chunked all-gene decoding, and explicit uncertainty modeling for rare perturbations. These choices directly address the core task challenges: high-dimensional outputs, cell-type-specific effects, and sparse coverage of rare perturbations. From an engineering standpoint, the core tensor shapes are manageable, and the factorized/chunked decoder is much more feasible than full gene-wise attention across all outputs. Mixed precision, gradient checkpointing, and phased training further improve practicality. However, the full design includes many interacting objectives and modules: VAE training, orthogonality constraints, mutual information penalty, pathway consistency, dual-head decoding, heteroscedastic uncertainty, top-DE auxiliary head, and curriculum phases. This creates substantial optimization complexity, high tuning burden, and risk that gains from individual components will not be additive in practice. The claimed 10.5 GB GPU estimate is plausible only for a carefully optimized implementation, likely excluding some overhead from dataloader workers, optimizer states for all decoder parameters, and memory spikes from multi-loss bookkeeping. Batch size 256 may be optimistic depending on the true target gene count, number of output heads retained simultaneously, and whether all-gene reconstruction is computed every step. Overall, feasibility is good for a research prototype on a modern 16–24 GB GPU, but moderate risk remains for reproducibility, stable convergence, and efficient training if all components are enabled at once.",
+          "content": {
+            "position": "neutral",
+            "confidence": 0.83,
+            "reasoning": "The architecture is implementable and technically well aligned with perturbation response prediction, but it is over-composed relative to the amount of information typically available in single-cell perturbation datasets. The strongest aspects are the baseline/effect factorization, conditional perturbation conditioning, pathway-aware inductive bias, chunked all-gene decoding, and explicit uncertainty modeling for rare perturbations. These choices directly address the core task challenges: high-dimensional outputs, cell-type-specific effects, and sparse coverage of rare perturbations. From an engineering standpoint, the core tensor shapes are manageable, and the factorized/chunked decoder is much more feasible than full gene-wise attention across all outputs. Mixed precision, gradient checkpointing, and phased training further improve practicality. However, the full design includes many interacting objectives and modules: VAE training, orthogonality constraints, mutual information penalty, pathway consistency, dual-head decoding, heteroscedastic uncertainty, top-DE auxiliary head, and curriculum phases. This creates substantial optimization complexity, high tuning burden, and risk that gains from individual components will not be additive in practice. The claimed 10.5 GB GPU estimate is plausible only for a carefully optimized implementation, likely excluding some overhead from dataloader workers, optimizer states for all decoder parameters, and memory spikes from multi-loss bookkeeping. Batch size 256 may be optimistic depending on the true target gene count, number of output heads retained simultaneously, and whether all-gene reconstruction is computed every step. Overall, feasibility is good for a research prototype on a modern 16–24 GB GPU, but moderate risk remains for reproducibility, stable convergence, and efficient training if all components are enabled at once.",
+            "concerns": [
+              "The architecture has very high optimization complexity due to the combination of VAE objectives, disentanglement penalties, uncertainty modeling, pathway regularization, and multiple supervised heads.",
+              "Mutual information penalties are often expensive and unstable to estimate; implementation details will strongly affect training stability and runtime.",
+              "The 10.5 GB GPU estimate may be understated if the all-gene output head covers 15k-20k genes, especially with dual outputs, uncertainty variance prediction, and optimizer states.",
+              "Batch size 256 is likely only achievable with aggressive chunking, AMP, and possibly activation checkpointing; otherwise realistic batch size may fall to 64-128.",
+              "The expression_head MLP ending at width 1536 can become a parameter and activation bottleneck when connected to all-gene outputs.",
+              "Pretraining on control plus all cells may introduce leakage between baseline and perturbation effect unless masking and objective design are handled carefully.",
+              "Orthogonality between baseline and effect latents does not guarantee true disentanglement and can conflict with biologically real interactions between cell state and perturbation response.",
+              "Pathway adapters depend on gene set quality and coverage; poor or mismatched pathway annotations can reduce performance or bias the model.",
+              "Rare perturbation oversampling can distort calibration unless loss weighting and uncertainty objectives are tuned carefully.",
+              "Paired/unpaired joint supervision increases dataloader and loss-assembly complexity, especially if controls must be matched by batch and cell type.",
+              "Heteroscedastic regression for per-gene variance over thousands of genes adds nontrivial memory and can become numerically unstable without variance clipping or softplus floors.",
+              "If modality includes both chemical and genetic perturbations, a shared perturbation embedding may be too restrictive unless there is enough data to learn modality-specific interaction structure."
+            ],
+            "suggestions": [
+              "Implement the system incrementally: start with a deterministic baseline/effect model plus chunked decoder, then add VAE stochasticity, then uncertainty, then pathway and MI penalties only if ablations justify them.",
+              "Replace the mutual information penalty with a simpler and cheaper proxy initially, such as cross-covariance reduction or stop-gradient contrastive decorrelation.",
+              "Validate whether predicting all genes is necessary every step; consider training mainly on HVGs with a lightweight projection head to all genes for periodic fine-tuning.",
+              "Benchmark memory with realistic gene counts and output heads enabled simultaneously before committing to batch size 256.",
+              "Use parameter sharing between control reconstruction and perturbation delta heads where possible to reduce memory and improve statistical efficiency.",
+              "Consider a negative binomial or zero-inflated count-aware likelihood if raw or quasi-count outputs are required; otherwise keep current regression setup for log-normalized targets.",
+              "Add variance floor, clipping, or softplus parameterization in the uncertainty head to avoid exploding or collapsing predicted variances.",
+              "Use ablations to verify that pathway_module and top_DE auxiliary head improve metrics on held-out perturbations rather than just in-distribution fit.",
+              "For rare perturbations, consider hierarchical perturbation embeddings with class-level prototypes and metric regularization instead of relying mainly on oversampling.",
+              "Profile decoder runtime carefully; gene chunking helps memory but may reduce throughput due to repeated kernel launches and poor fusion.",
+              "If hardware is limited to 12 GB GPUs, reduce hidden widths, use latent dim 64, shrink chunk size, and disable the uncertainty head during early development.",
+              "Design evaluation splits around unseen perturbations, unseen cell type-perturbation combinations, and dose generalization, since the architecture is specifically intended for extrapolation."
+            ],
+            "estimated_memory_gb": 13.8,
+            "estimated_training_time": "18-36 hours for an initial research-grade run on a single modern 16-24 GB GPU; 2-5 days with ablations/hyperparameter tuning and phased training"
+          },
+          "suggestions": [
+            "Implement the system incrementally: start with a deterministic baseline/effect model plus chunked decoder, then add VAE stochasticity, then uncertainty, then pathway and MI penalties only if ablations justify them.",
+            "Replace the mutual information penalty with a simpler and cheaper proxy initially, such as cross-covariance reduction or stop-gradient contrastive decorrelation.",
+            "Validate whether predicting all genes is necessary every step; consider training mainly on HVGs with a lightweight projection head to all genes for periodic fine-tuning.",
+            "Benchmark memory with realistic gene counts and output heads enabled simultaneously before committing to batch size 256.",
+            "Use parameter sharing between control reconstruction and perturbation delta heads where possible to reduce memory and improve statistical efficiency.",
+            "Consider a negative binomial or zero-inflated count-aware likelihood if raw or quasi-count outputs are required; otherwise keep current regression setup for log-normalized targets.",
+            "Add variance floor, clipping, or softplus parameterization in the uncertainty head to avoid exploding or collapsing predicted variances.",
+            "Use ablations to verify that pathway_module and top_DE auxiliary head improve metrics on held-out perturbations rather than just in-distribution fit.",
+            "For rare perturbations, consider hierarchical perturbation embeddings with class-level prototypes and metric regularization instead of relying mainly on oversampling.",
+            "Profile decoder runtime carefully; gene chunking helps memory but may reduce throughput due to repeated kernel launches and poor fusion.",
+            "If hardware is limited to 12 GB GPUs, reduce hidden widths, use latent dim 64, shrink chunk size, and disable the uncertainty head during early development.",
+            "Design evaluation splits around unseen perturbations, unseen cell type-perturbation combinations, and dose generalization, since the architecture is specifically intended for extrapolation."
+          ],
+          "concerns": [
+            "The architecture has very high optimization complexity due to the combination of VAE objectives, disentanglement penalties, uncertainty modeling, pathway regularization, and multiple supervised heads.",
+            "Mutual information penalties are often expensive and unstable to estimate; implementation details will strongly affect training stability and runtime.",
+            "The 10.5 GB GPU estimate may be understated if the all-gene output head covers 15k-20k genes, especially with dual outputs, uncertainty variance prediction, and optimizer states.",
+            "Batch size 256 is likely only achievable with aggressive chunking, AMP, and possibly activation checkpointing; otherwise realistic batch size may fall to 64-128.",
+            "The expression_head MLP ending at width 1536 can become a parameter and activation bottleneck when connected to all-gene outputs.",
+            "Pretraining on control plus all cells may introduce leakage between baseline and perturbation effect unless masking and objective design are handled carefully.",
+            "Orthogonality between baseline and effect latents does not guarantee true disentanglement and can conflict with biologically real interactions between cell state and perturbation response.",
+            "Pathway adapters depend on gene set quality and coverage; poor or mismatched pathway annotations can reduce performance or bias the model.",
+            "Rare perturbation oversampling can distort calibration unless loss weighting and uncertainty objectives are tuned carefully.",
+            "Paired/unpaired joint supervision increases dataloader and loss-assembly complexity, especially if controls must be matched by batch and cell type.",
+            "Heteroscedastic regression for per-gene variance over thousands of genes adds nontrivial memory and can become numerically unstable without variance clipping or softplus floors.",
+            "If modality includes both chemical and genetic perturbations, a shared perturbation embedding may be too restrictive unless there is enough data to learn modality-specific interaction structure."
+          ]
+        },
+        {
+          "expert": "critic",
+          "confidence": 0.84,
+          "reasoning": "This architecture is a strong hybrid of ideas that have worked in single-cell perturbation modeling, but it also inherits many of the same unresolved weaknesses. Compared with CPA/conditional perturbation autoencoder-style models, its baseline/effect factorization, dose conditioning, and compositional perturbation embeddings are well aligned with the perturbation-response task and should improve over plain cVAEs or vanilla feed-forward delta predictors when perturbation, cell type, and dose interactions matter. Relative to scGen-like latent arithmetic approaches, this design is more expressive and better equipped for non-linear, cell-type-specific effects. Relative to chemCPA/CPA, the pathway-aware adapter and uncertainty head are sensible additions for sample efficiency and rare-perturbation calibration. Relative to scVI-family generative models, however, the likelihood model and preprocessing choices are less well matched to raw count statistics: using log1p-normalized HVGs with regression-style losses may give good point-estimate metrics but can limit biological fidelity, calibration, and transfer across datasets with different depth/noise characteristics. The design is also much more complex than established baselines, which raises reproducibility concerns and makes it harder to know whether gains come from genuinely better inductive bias or from many auxiliary losses and tuning degrees of freedom. A central methodological concern is that the proposed disentanglement between baseline and perturbation effect is only weakly identifiable from observational single-cell perturbation data. Orthogonality and MI penalties can encourage separation, but they do not guarantee that the learned 'effect latent' corresponds to true intervention-specific biology rather than residual cell-state or batch structure. This is a known issue in perturbation latent-variable models and often becomes visible under out-of-distribution settings such as unseen cell types, unseen compounds, combinatorial perturbations, or large dose shifts. Compared with stronger mechanistic priors such as knowledge-graph or target/pathway-constrained models, the current pathway module is still fairly soft and may improve interpretability more than actual causal generalization. Overall, this is likely competitive with CPA/scGen-class methods on in-distribution and mildly extrapolative benchmarks, especially if evaluation emphasizes R2/MSE/Pearson on DE genes, but I would be cautious about claiming robust OOD generalization or causal disentanglement without direct benchmarking against CPA/chemCPA/scGen/GEARS/SciPlex-style dose-response settings on real held-out perturbations and cell contexts.",
+          "content": {
+            "position": "neutral",
+            "confidence": 0.84,
+            "reasoning": "This architecture is a strong hybrid of ideas that have worked in single-cell perturbation modeling, but it also inherits many of the same unresolved weaknesses. Compared with CPA/conditional perturbation autoencoder-style models, its baseline/effect factorization, dose conditioning, and compositional perturbation embeddings are well aligned with the perturbation-response task and should improve over plain cVAEs or vanilla feed-forward delta predictors when perturbation, cell type, and dose interactions matter. Relative to scGen-like latent arithmetic approaches, this design is more expressive and better equipped for non-linear, cell-type-specific effects. Relative to chemCPA/CPA, the pathway-aware adapter and uncertainty head are sensible additions for sample efficiency and rare-perturbation calibration. Relative to scVI-family generative models, however, the likelihood model and preprocessing choices are less well matched to raw count statistics: using log1p-normalized HVGs with regression-style losses may give good point-estimate metrics but can limit biological fidelity, calibration, and transfer across datasets with different depth/noise characteristics. The design is also much more complex than established baselines, which raises reproducibility concerns and makes it harder to know whether gains come from genuinely better inductive bias or from many auxiliary losses and tuning degrees of freedom. A central methodological concern is that the proposed disentanglement between baseline and perturbation effect is only weakly identifiable from observational single-cell perturbation data. Orthogonality and MI penalties can encourage separation, but they do not guarantee that the learned 'effect latent' corresponds to true intervention-specific biology rather than residual cell-state or batch structure. This is a known issue in perturbation latent-variable models and often becomes visible under out-of-distribution settings such as unseen cell types, unseen compounds, combinatorial perturbations, or large dose shifts. Compared with stronger mechanistic priors such as knowledge-graph or target/pathway-constrained models, the current pathway module is still fairly soft and may improve interpretability more than actual causal generalization. Overall, this is likely competitive with CPA/scGen-class methods on in-distribution and mildly extrapolative benchmarks, especially if evaluation emphasizes R2/MSE/Pearson on DE genes, but I would be cautious about claiming robust OOD generalization or causal disentanglement without direct benchmarking against CPA/chemCPA/scGen/GEARS/SciPlex-style dose-response settings on real held-out perturbations and cell contexts.",
+            "limitations": [
+              "Baseline/effect disentanglement is not identifiable from standard perturb-seq data; orthogonality and mutual-information penalties are heuristic and may not isolate true causal perturbation effects.",
+              "Reliance on log1p-normalized HVGs plus regression losses departs from count-aware models such as scVI; this may hurt calibration, robustness to sequencing depth variation, and transfer across datasets/platforms.",
+              "The architecture is highly composite, with many interacting modules and losses, making hyperparameter tuning difficult and reducing reproducibility across labs and datasets.",
+              "Pathway priors can help sample efficiency, but fixed gene sets are incomplete, context dependent, and biased toward well-studied biology; they may miss novel or off-target responses.",
+              "Generalization to unseen perturbations is limited if perturbation identity embeddings dominate learning; hierarchical grouping helps only when annotations reflect functional similarity.",
+              "Rare perturbation oversampling and top-DE weighting can improve benchmark metrics while worsening calibration or performance on subtle genome-wide responses.",
+              "The model appears better suited to single perturbations than to combinatorial perturbations unless explicit composition constraints are validated.",
+              "Using a control-state encoder assumes the control sufficiently captures response potential; this can fail for strong state transitions, toxicity, or perturbations that induce new cell states absent in controls.",
+              "Heteroscedastic uncertainty heads often improve apparent calibration only modestly unless evaluated with rigorous OOD uncertainty benchmarks; they do not solve epistemic uncertainty for novel perturbations.",
+              "Chunked/factorized decoding may trade memory efficiency for weaker modeling of long-range gene-gene dependency compared with richer decoder structures or explicit gene-network models."
+            ],
+            "comparison_notes": [
+              "Compared with scGen, this design is more expressive and better structured for perturbation/cell-type/dose interactions, but it is also more complex and less interpretable in terms of simple latent shifts.",
+              "Compared with CPA/chemCPA, it is broadly in the same family and likely stronger when pathway priors and uncertainty are useful, but its extra disentanglement penalties and decoder complexity may not consistently outperform simpler compositional baselines.",
+              "Compared with scVI/scANVI-style probabilistic models, it is weaker in observation modeling if trained on log-normalized expression instead of raw counts with NB/ZINB likelihoods.",
+              "Compared with GEARS or graph-informed perturbation models, it has softer biological priors; this may improve flexibility but may underperform on gene perturbations where regulatory structure is critical.",
+              "Compared with SciPlex-style dose-response approaches, the explicit dose embedding is a strength, but whether it captures monotonic or saturating dose effects as well as dedicated dose-response parameterizations is unclear.",
+              "Compared with nearest-neighbor or matching-based baselines, this model should do better under sparse pairing and non-linear effects, but those simpler methods can sometimes be more robust when training data are limited and batch effects dominate.",
+              "Compared with linear factor models for differential expression prediction, this architecture should win on top-DE metrics for strong perturbations but may overfit and offer less stable performance on weak perturbations.",
+              "Compared with methods that model perturbation as direct gene-network intervention, this architecture is less mechanistic and may struggle to extrapolate across tissues or unseen biological contexts."
+            ],
+            "suggestions": [
+              "Benchmark directly against strong perturbation baselines: scGen, CPA, chemCPA, GEARS, and simple nearest-control or matched-neighbor baselines, using identical splits including unseen perturbations, unseen cell types, and dose extrapolation.",
+              "Consider replacing or augmenting log1p regression outputs with a count-aware likelihood from the scVI family to improve statistical fidelity and dataset transferability.",
+              "Test whether the pathway module provides real benefit by ablation against random gene sets and no-pathway controls; many pathway-informed gains disappear under strict benchmarking.",
+              "Use evaluation settings modeled after SciPlex/chemCPA benchmarks, especially held-out dose ranges and perturbation classes, to validate the claimed OOD regularization.",
+              "Add explicit tests for combinatorial perturbation composition if that is a target use case; otherwise avoid implying compositional generalization from factorized embeddings alone.",
+              "Assess calibration with proper scoring rules and selective prediction curves, not only point metrics, because uncertainty heads are often overinterpreted.",
+              "Reduce architectural degrees of freedom where possible; a simpler CPA-like core with one or two carefully validated priors may be easier to reproduce and could match performance.",
+              "If genetic perturbations are central, incorporate stronger regulatory priors or target-gene/GRN structure, analogous in spirit to graph-based perturbation models, rather than relying only on generic pathway adapters.",
+              "Evaluate across multiple tissues, platforms, and batch structures to determine whether the disentangled latent actually generalizes or merely absorbs dataset-specific structure.",
+              "Report sensitivity analyses for KL weight, orthogonality/MI penalties, DE weighting, and rare-perturbation oversampling, since these are likely to materially affect conclusions."
+            ]
+          },
+          "suggestions": [
+            "Benchmark directly against strong perturbation baselines: scGen, CPA, chemCPA, GEARS, and simple nearest-control or matched-neighbor baselines, using identical splits including unseen perturbations, unseen cell types, and dose extrapolation.",
+            "Consider replacing or augmenting log1p regression outputs with a count-aware likelihood from the scVI family to improve statistical fidelity and dataset transferability.",
+            "Test whether the pathway module provides real benefit by ablation against random gene sets and no-pathway controls; many pathway-informed gains disappear under strict benchmarking.",
+            "Use evaluation settings modeled after SciPlex/chemCPA benchmarks, especially held-out dose ranges and perturbation classes, to validate the claimed OOD regularization.",
+            "Add explicit tests for combinatorial perturbation composition if that is a target use case; otherwise avoid implying compositional generalization from factorized embeddings alone.",
+            "Assess calibration with proper scoring rules and selective prediction curves, not only point metrics, because uncertainty heads are often overinterpreted.",
+            "Reduce architectural degrees of freedom where possible; a simpler CPA-like core with one or two carefully validated priors may be easier to reproduce and could match performance.",
+            "If genetic perturbations are central, incorporate stronger regulatory priors or target-gene/GRN structure, analogous in spirit to graph-based perturbation models, rather than relying only on generic pathway adapters.",
+            "Evaluate across multiple tissues, platforms, and batch structures to determine whether the disentangled latent actually generalizes or merely absorbs dataset-specific structure.",
+            "Report sensitivity analyses for KL weight, orthogonality/MI penalties, DE weighting, and rare-perturbation oversampling, since these are likely to materially affect conclusions."
+          ],
+          "concerns": [
+            "Baseline/effect disentanglement is not identifiable from standard perturb-seq data; orthogonality and mutual-information penalties are heuristic and may not isolate true causal perturbation effects.",
+            "Reliance on log1p-normalized HVGs plus regression losses departs from count-aware models such as scVI; this may hurt calibration, robustness to sequencing depth variation, and transfer across datasets/platforms.",
+            "The architecture is highly composite, with many interacting modules and losses, making hyperparameter tuning difficult and reducing reproducibility across labs and datasets.",
+            "Pathway priors can help sample efficiency, but fixed gene sets are incomplete, context dependent, and biased toward well-studied biology; they may miss novel or off-target responses.",
+            "Generalization to unseen perturbations is limited if perturbation identity embeddings dominate learning; hierarchical grouping helps only when annotations reflect functional similarity.",
+            "Rare perturbation oversampling and top-DE weighting can improve benchmark metrics while worsening calibration or performance on subtle genome-wide responses.",
+            "The model appears better suited to single perturbations than to combinatorial perturbations unless explicit composition constraints are validated.",
+            "Using a control-state encoder assumes the control sufficiently captures response potential; this can fail for strong state transitions, toxicity, or perturbations that induce new cell states absent in controls.",
+            "Heteroscedastic uncertainty heads often improve apparent calibration only modestly unless evaluated with rigorous OOD uncertainty benchmarks; they do not solve epistemic uncertainty for novel perturbations.",
+            "Chunked/factorized decoding may trade memory efficiency for weaker modeling of long-range gene-gene dependency compared with richer decoder structures or explicit gene-network models.",
+            "Compared with scGen, this design is more expressive and better structured for perturbation/cell-type/dose interactions, but it is also more complex and less interpretable in terms of simple latent shifts.",
+            "Compared with CPA/chemCPA, it is broadly in the same family and likely stronger when pathway priors and uncertainty are useful, but its extra disentanglement penalties and decoder complexity may not consistently outperform simpler compositional baselines.",
+            "Compared with scVI/scANVI-style probabilistic models, it is weaker in observation modeling if trained on log-normalized expression instead of raw counts with NB/ZINB likelihoods.",
+            "Compared with GEARS or graph-informed perturbation models, it has softer biological priors; this may improve flexibility but may underperform on gene perturbations where regulatory structure is critical.",
+            "Compared with SciPlex-style dose-response approaches, the explicit dose embedding is a strength, but whether it captures monotonic or saturating dose effects as well as dedicated dose-response parameterizations is unclear.",
+            "Compared with nearest-neighbor or matching-based baselines, this model should do better under sparse pairing and non-linear effects, but those simpler methods can sometimes be more robust when training data are limited and batch effects dominate.",
+            "Compared with linear factor models for differential expression prediction, this architecture should win on top-DE metrics for strong perturbations but may overfit and offer less stable performance on weak perturbations.",
+            "Compared with methods that model perturbation as direct gene-network intervention, this architecture is less mechanistic and may struggle to extrapolate across tissues or unseen biological contexts."
+          ]
+        }
+      ],
+      "timestamp": "2026-05-20T14:06:17.394581"
+    },
+    {
+      "round_num": 3,
+      "consensus_score": 0.7570856477790027,
+      "blueprint": {
+        "architecture_type": "Conditional count-aware perturbation VAE with delta head and pathway-gated decoder",
+        "model_config": {
+          "input_representation": "raw counts or Pearson residuals for 3000-4000 HVGs + library size, cell type, batch, perturbation id, modality, dose",
+          "preprocessing": {
+            "use_hvg": true,
+            "n_hvg": 3000,
+            "count_aware": true,
+            "size_factor_normalization": true,
+            "log_transform": false,
+            "retain_all_gene_projection": true,
+            "all_gene_projection_frequency": "periodic fine-tune only",
+            "streaming_or_chunked_loading": true
+          },
+          "encoder": {
+            "type": "conditional_mlp_encoder",
+            "layers": [
+              1024,
+              512,
+              256
+            ],
+            "activations": "GELU",
+            "dropout": 0.1,
+            "normalization": "LayerNorm",
+            "posterior": "mean_logvar",
+            "kl_annealing": true,
+            "free_bits": 0.25
+          },
+          "latent_spaces": {
+            "baseline_latent_dim": 64,
+            "effect_latent_dim": 32,
+            "total_latent_dim": 96,
+            "disentanglement": "structured factorization with cross-covariance penalty instead of MI"
+          },
+          "perturbation_conditioning": {
+            "type": "factorized_embedding",
+            "perturbation_id_dim": 32,
+            "dose_dim": 8,
+            "modality_dim": 8,
+            "shared_mlp": [
+              64,
+              64
+            ],
+            "cell_type_embedding_dim": 24,
+            "batch_embedding_dim": 16
+          },
+          "pathway_module": {
+            "type": "lightweight_pathway_gating",
+            "pathway_dim": 32,
+            "uses_gene_sets": true,
+            "mode": "low_rank adapter + gating",
+            "ablation_ready": true
+          },
+          "decoder": {
+            "type": "conditional count-aware decoder",
+            "shared_hidden": [
+              256,
+              512
+            ],
+            "gene_chunking": {
+              "enabled": true,
+              "chunk_size_genes": 512
+            },
+            "output_heads": {
+              "mean_expression": "negative binomial mean",
+              "dispersion": "gene-wise or chunk-wise dispersion",
+              "delta_expression": "auxiliary delta head for DE"
+            },
+            "final_projection": "all-gene low-rank projection head"
+          },
+          "uncertainty": {
+            "type": "variance_or_dispersion_floor_regularized",
+            "use_for_rare_perturbations": true,
+            "constraint": "lower and upper bounds on predicted variance"
+          },
+          "disentanglement": {
+            "baseline_branch": "reconstruct control state",
+            "effect_branch": "predict perturbation delta",
+            "constraint": "cross-covariance reduction + stop-gradient decorrelation",
+            "avoid": "explicit mutual information estimator"
+          },
+          "training_strategy": {
+            "phase_1": "deterministic baseline/effect pretraining with chunked decoder",
+            "phase_2": "enable conditional VAE and count-aware likelihood",
+            "phase_3": "add uncertainty and pathway gating only after ablations",
+            "phase_4": "optional all-gene fine-tuning on subset of steps",
+            "curriculum": "simple to complex to reduce optimization interference"
+          },
+          "optimization": {
+            "optimizer": "AdamW",
+            "learning_rate": 0.0003,
+            "scheduler": "cosine with warmup",
+            "mixed_precision": true,
+            "gradient_checkpointing": true,
+            "dynamic_loss_weighting": false,
+            "gradient_clip_norm": 1.0
+          },
+          "data_sampling": {
+            "batch_sampler": "stratified by cell type and perturbation",
+            "rare_perturbation_oversampling": true,
+            "paired_control_target_preference": true,
+            "hard_negative_mining": true,
+            "streaming_for_large_datasets": true
+          },
+          "baseline_comparison_plan": [
+            "scGen",
+            "CPA",
+            "chemCPA",
+            "GEARS",
+            "matched-control predictor"
+          ]
+        },
+        "latent_dim": 96,
+        "loss_functions": [
+          "negative_binomial_reconstruction_loss",
+          "kl_divergence_with_annealing",
+          "auxiliary_delta_mse_loss",
+          "top_de_gene_weighted_loss",
+          "cross_covariance_decorrelation_loss",
+          "pathway_consistency_loss",
+          "variance_floor_regularization"
+        ],
+        "memory_requirements": {
+          "gpu_gb": 8.0,
+          "ram_gb": 24.0
+        },
+        "batch_size_recommendation": 96,
+        "reasoning": "This revision directly addresses the three critiques. For ML theory, it removes the overly redundant objective stack and uses one primary probabilistic target: a count-aware negative binomial likelihood for perturbed expression, with auxiliary delta and top-DE losses clearly secondary. That makes the model more coherent than combining Huber, MSE, NLL, and calibration losses on the same target. It also replaces mutual-information estimation with a cheaper cross-covariance/decorrelation proxy, which is easier to optimize and less unstable. Disentanglement is kept as a structured factorization, but without overstating identifiability claims. For engineering, the model is simplified and made cheaper: smaller encoder widths, smaller latent split, 512-gene chunked decoding, and delayed activation of pathway/uncertainty modules reduce memory and tuning burden. The estimate is sized for an 8 GB GPU with mixed precision and checkpointing, and batch size 96 is safer than 256 for all-gene or multi-head training. For methodology, the design is closer to scVI-family statistical fidelity by supporting count-aware likelihoods, while still retaining CPA/chemCPA-style conditioning, dose handling, and cell-type-specific perturbation modeling. The pathway module is kept lightweight and explicitly ablation-ready, so its benefit can be tested against strong baselines such as scGen, CPA, chemCPA, GEARS, and matched-control predictors. Overall, this blueprint is more theoretically consistent, more reproducible, and more feasible while still targeting R2, MSE, and Pearson on top differentially expressed genes."
+      },
+      "experts": [
+        {
+          "expert": "scientist",
+          "confidence": 0.78,
+          "reasoning": "From a theory perspective, the architecture is reasonably sound. The conditional count-aware decoder with a negative binomial likelihood matches the overdispersed, zero-inflated nature of gene counts better than an MSE-only objective, so the primary loss is statistically aligned with the data-generating process. The baseline/effect factorization is also a sensible inductive bias for separating cell-state identity from perturbation response, and the use of conditional embeddings for cell type, batch, perturbation, and dose gives the model sufficient expressive power to represent interaction effects. KL annealing and free bits are theoretically justified to reduce posterior collapse in conditional VAEs, especially when the decoder is strong. The cross-covariance penalty is a more stable surrogate than mutual-information estimation for encouraging disentanglement, though it provides weaker identifiability guarantees. The curriculum from deterministic pretraining to VAE training is also sensible for optimization stability, since it reduces early posterior/decoder interference. Overall, the design is coherent and better grounded than a stack of redundant objectives, but its disentanglement and rare-perturbation generalization remain only weakly identifiable and may depend heavily on data regime and tuning.",
+          "content": {
+            "position": "support",
+            "confidence": 0.78,
+            "reasoning": "From a theory perspective, the architecture is reasonably sound. The conditional count-aware decoder with a negative binomial likelihood matches the overdispersed, zero-inflated nature of gene counts better than an MSE-only objective, so the primary loss is statistically aligned with the data-generating process. The baseline/effect factorization is also a sensible inductive bias for separating cell-state identity from perturbation response, and the use of conditional embeddings for cell type, batch, perturbation, and dose gives the model sufficient expressive power to represent interaction effects. KL annealing and free bits are theoretically justified to reduce posterior collapse in conditional VAEs, especially when the decoder is strong. The cross-covariance penalty is a more stable surrogate than mutual-information estimation for encouraging disentanglement, though it provides weaker identifiability guarantees. The curriculum from deterministic pretraining to VAE training is also sensible for optimization stability, since it reduces early posterior/decoder interference. Overall, the design is coherent and better grounded than a stack of redundant objectives, but its disentanglement and rare-perturbation generalization remain only weakly identifiable and may depend heavily on data regime and tuning.",
+            "theoretical_concerns": [
+              "Posterior collapse risk in conditional VAE due to a powerful decoder and strong conditioning signals",
+              "Weak identifiability of baseline vs effect latent factorization; cross-covariance reduction does not guarantee causal disentanglement",
+              "Objective mismatch between NB reconstruction and auxiliary delta/top-DE losses may create gradient conflict unless carefully weighted",
+              "Rare perturbation oversampling can induce distribution shift and biased risk minimization if not importance-corrected",
+              "Gene-chunked decoding with periodic all-gene projection may introduce optimization inconsistency between local and global objectives",
+              "Pathway gating adds a structured inductive bias but may underfit perturbations outside known gene-set pathways",
+              "Lower/upper variance constraints can cause miscalibration if the true conditional dispersion lies outside the imposed bounds",
+              "Stratified sampling by cell type and perturbation can alter the effective training distribution, weakening calibrated probabilistic interpretation"
+            ],
+            "suggestions": [
+              "Use KL warm-up plus free-bits exactly as specified, and consider cyclical annealing if collapse appears",
+              "Add importance weighting or rebalancing correction when oversampling rare perturbations",
+              "Make the auxiliary delta and top-DE losses explicitly down-weighted and schedule them after reconstruction stabilizes",
+              "Test identifiability with ablations; do not interpret latent factor separation causally without additional constraints",
+              "If calibration matters, monitor predictive dispersion and relax hard variance floors/ceilings or learn them hierarchically",
+              "Consider a mixture or hierarchical NB head if inter-cell or inter-perturbation heteroskedasticity is strong",
+              "Use contrastive or group-wise regularization only if it improves representation stability; otherwise keep disentanglement penalties minimal",
+              "Validate the chunked decoder against full-gene decoding to ensure no optimization gap between chunk-local and global predictions"
+            ]
+          },
+          "suggestions": [
+            "Use KL warm-up plus free-bits exactly as specified, and consider cyclical annealing if collapse appears",
+            "Add importance weighting or rebalancing correction when oversampling rare perturbations",
+            "Make the auxiliary delta and top-DE losses explicitly down-weighted and schedule them after reconstruction stabilizes",
+            "Test identifiability with ablations; do not interpret latent factor separation causally without additional constraints",
+            "If calibration matters, monitor predictive dispersion and relax hard variance floors/ceilings or learn them hierarchically",
+            "Consider a mixture or hierarchical NB head if inter-cell or inter-perturbation heteroskedasticity is strong",
+            "Use contrastive or group-wise regularization only if it improves representation stability; otherwise keep disentanglement penalties minimal",
+            "Validate the chunked decoder against full-gene decoding to ensure no optimization gap between chunk-local and global predictions"
+          ],
+          "concerns": [
+            "Posterior collapse risk in conditional VAE due to a powerful decoder and strong conditioning signals",
+            "Weak identifiability of baseline vs effect latent factorization; cross-covariance reduction does not guarantee causal disentanglement",
+            "Objective mismatch between NB reconstruction and auxiliary delta/top-DE losses may create gradient conflict unless carefully weighted",
+            "Rare perturbation oversampling can induce distribution shift and biased risk minimization if not importance-corrected",
+            "Gene-chunked decoding with periodic all-gene projection may introduce optimization inconsistency between local and global objectives",
+            "Pathway gating adds a structured inductive bias but may underfit perturbations outside known gene-set pathways",
+            "Lower/upper variance constraints can cause miscalibration if the true conditional dispersion lies outside the imposed bounds",
+            "Stratified sampling by cell type and perturbation can alter the effective training distribution, weakening calibrated probabilistic interpretation"
+          ]
+        },
+        {
+          "expert": "engineer",
+          "confidence": 0.9,
+          "reasoning": "The architecture is implementable and well aligned with current perturbation-response modeling practice. A conditional VAE with count-aware NB decoding, cell-type/batch/perturbation conditioning, and an auxiliary delta head is a practical design for high-dimensional gene expression prediction. The chunked decoder, mixed precision, checkpointing, and phased training make the system feasible on 8 GB GPU memory, though training will still be non-trivial. The main engineering risk is not basic feasibility but optimization complexity from multiple auxiliary losses and disentanglement constraints; however, the proposed curriculum and simplifications (cross-covariance instead of MI, lightweight pathway gating) mitigate this. The periodic all-gene projection is sensible as a fine-tuning-only step, not a full-time training path. Overall, this is a realistic architecture with moderate implementation complexity and good chance of working if carefully ablated and tuned.",
+          "content": {
+            "position": "support",
+            "confidence": 0.9,
+            "reasoning": "The architecture is implementable and well aligned with current perturbation-response modeling practice. A conditional VAE with count-aware NB decoding, cell-type/batch/perturbation conditioning, and an auxiliary delta head is a practical design for high-dimensional gene expression prediction. The chunked decoder, mixed precision, checkpointing, and phased training make the system feasible on 8 GB GPU memory, though training will still be non-trivial. The main engineering risk is not basic feasibility but optimization complexity from multiple auxiliary losses and disentanglement constraints; however, the proposed curriculum and simplifications (cross-covariance instead of MI, lightweight pathway gating) mitigate this. The periodic all-gene projection is sensible as a fine-tuning-only step, not a full-time training path. Overall, this is a realistic architecture with moderate implementation complexity and good chance of working if carefully ablated and tuned.",
+            "concerns": [
+              "Multi-objective training can become unstable if auxiliary losses are not properly weighted.",
+              "Disentangling baseline and perturbation effect may still be weak without paired controls for many samples.",
+              "All-gene projection can increase memory and may bottleneck inference if used too frequently.",
+              "Rare perturbation generalization remains limited by data imbalance despite oversampling.",
+              "Gene-wise dispersion estimation may be heavy if not parameter-shared or chunked."
+            ],
+            "suggestions": [
+              "Start with deterministic baseline/effect prediction and add VAE only after the supervised version is validated.",
+              "Use chunk-wise shared dispersion or low-rank dispersion to reduce parameter count.",
+              "Prefer paired-control minibatches whenever available to stabilize delta learning.",
+              "Keep pathway gating optional and verify it via ablations before making it core.",
+              "Monitor top-DE metrics separately from global reconstruction to avoid optimizing the wrong objective.",
+              "If 8 GB becomes tight, reduce batch size to 32-64 and rely on gradient accumulation."
+            ],
+            "estimated_memory_gb": 7.2,
+            "estimated_training_time": "1-3 days on a single 8 GB GPU for a medium dataset; longer (several days) if dataset is large or all-gene fine-tuning is frequent"
+          },
+          "suggestions": [
+            "Start with deterministic baseline/effect prediction and add VAE only after the supervised version is validated.",
+            "Use chunk-wise shared dispersion or low-rank dispersion to reduce parameter count.",
+            "Prefer paired-control minibatches whenever available to stabilize delta learning.",
+            "Keep pathway gating optional and verify it via ablations before making it core.",
+            "Monitor top-DE metrics separately from global reconstruction to avoid optimizing the wrong objective.",
+            "If 8 GB becomes tight, reduce batch size to 32-64 and rely on gradient accumulation."
+          ],
+          "concerns": [
+            "Multi-objective training can become unstable if auxiliary losses are not properly weighted.",
+            "Disentangling baseline and perturbation effect may still be weak without paired controls for many samples.",
+            "All-gene projection can increase memory and may bottleneck inference if used too frequently.",
+            "Rare perturbation generalization remains limited by data imbalance despite oversampling.",
+            "Gene-wise dispersion estimation may be heavy if not parameter-shared or chunked."
+          ]
+        },
+        {
+          "expert": "critic",
+          "confidence": 0.84,
+          "reasoning": "This architecture is a thoughtful synthesis of ideas from scVI-style count modeling and CPA/chemCPA-style conditional perturbation prediction, with an added explicit delta head and optional pathway gating. Compared with older latent arithmetic approaches such as scGen, it is methodologically stronger for count data, dose handling, and covariate conditioning. Compared with CPA/chemCPA, it is more statistically aligned with single-cell RNA-seq through a negative-binomial decoder and explicit baseline/effect factorization. However, its main novelty is largely compositional rather than conceptually transformative, and several core assumptions remain only weakly validated for real perturbation biology. In particular, the model assumes perturbation response can be decomposed into a baseline cell state plus a perturbation-specific effect latent with modest decorrelation constraints; this is attractive but not equivalent to true biological disentanglement, especially when perturbation effects are highly state-dependent, nonlinear, or induce large cell-state transitions. Against GEARS, the proposed design is broader and more flexible across chemical/genetic settings, but likely weaker for gene perturbation tasks where explicit graph inductive bias over genes is useful. Against matched-control and nearest-neighbor style baselines, it should win when there is enough coverage across perturbations, doses, and cell types, but may underperform in low-data or out-of-distribution regimes because the architecture is still heavily supervised by observed perturbation-condition combinations. Overall, this is a strong practical architecture for in-distribution or mildly extrapolative perturbation prediction, but it does not fully solve the major benchmark gap in the field: reliable generalization to unseen perturbations, unseen cell contexts, and mechanistically different perturbation classes.",
+          "content": {
+            "position": "neutral",
+            "confidence": 0.84,
+            "reasoning": "This architecture is a thoughtful synthesis of ideas from scVI-style count modeling and CPA/chemCPA-style conditional perturbation prediction, with an added explicit delta head and optional pathway gating. Compared with older latent arithmetic approaches such as scGen, it is methodologically stronger for count data, dose handling, and covariate conditioning. Compared with CPA/chemCPA, it is more statistically aligned with single-cell RNA-seq through a negative-binomial decoder and explicit baseline/effect factorization. However, its main novelty is largely compositional rather than conceptually transformative, and several core assumptions remain only weakly validated for real perturbation biology. In particular, the model assumes perturbation response can be decomposed into a baseline cell state plus a perturbation-specific effect latent with modest decorrelation constraints; this is attractive but not equivalent to true biological disentanglement, especially when perturbation effects are highly state-dependent, nonlinear, or induce large cell-state transitions. Against GEARS, the proposed design is broader and more flexible across chemical/genetic settings, but likely weaker for gene perturbation tasks where explicit graph inductive bias over genes is useful. Against matched-control and nearest-neighbor style baselines, it should win when there is enough coverage across perturbations, doses, and cell types, but may underperform in low-data or out-of-distribution regimes because the architecture is still heavily supervised by observed perturbation-condition combinations. Overall, this is a strong practical architecture for in-distribution or mildly extrapolative perturbation prediction, but it does not fully solve the major benchmark gap in the field: reliable generalization to unseen perturbations, unseen cell contexts, and mechanistically different perturbation classes.",
+            "limitations": [
+              "The baseline/effect latent factorization is not identifiable from observational perturbation data alone; decorrelation and cross-covariance penalties do not guarantee biologically meaningful disentanglement.",
+              "Generalization to unseen perturbations is fundamentally limited if perturbation_id embeddings are the main representation. This is weaker than using mechanistic features such as target genes, chemical structure, or pathway priors as primary inputs.",
+              "For strong perturbations that alter cell identity or induce trajectory shifts, the assumption of a control baseline plus additive/predictable delta may break down.",
+              "Pathway gating based on predefined gene sets can help interpretability but risks hard-coding incomplete or biased biology; performance gains may not transfer across tissues or perturbation modalities.",
+              "Top-DE-weighted auxiliary losses may improve benchmark metrics while biasing the model away from global transcriptome fidelity and subtle but biologically important expression changes.",
+              "Count-aware NB likelihood improves statistical fit for scRNA-seq, but if inputs include Pearson residuals or multimodal settings, the coherence between preprocessing and likelihood assumptions becomes less clean.",
+              "Rare perturbation oversampling does not solve the fundamental lack of information problem; uncertainty floors may regularize predictions, but they do not create true extrapolative ability.",
+              "The architecture remains highly hyperparameterized, with multiple training phases and optional modules that can make fair reproduction and ablation difficult.",
+              "Batch and cell-type embeddings can absorb perturbation signal or confound biological effect if experimental design is imbalanced, especially in real-world datasets with condition-batch entanglement.",
+              "The all-gene low-rank projection may bottleneck fine-grained gene-specific responses, particularly for rare or pathway-divergent perturbations."
+            ],
+            "comparison_notes": [
+              "Versus scGen: stronger due to count-aware decoding, explicit covariates, dose handling, and better accommodation of batch/cell-type effects; scGen's simple latent shift is easier to train but usually less faithful for complex heterogeneous datasets.",
+              "Versus CPA: similar conditional philosophy, but this model is more aligned with single-cell count statistics through an NB decoder and may better reconstruct realistic expression distributions; CPA has a cleaner perturbation-compositional framing and has been more directly stress-tested on combinatorial perturbations.",
+              "Versus chemCPA: this design is competitive for mixed perturbation settings, but if chemical perturbations are central, chemCPA's use of chemical structure and dose-response inductive bias is a major advantage for unseen compounds.",
+              "Versus GEARS: GEARS is likely stronger for CRISPR gene perturbation tasks where gene-gene graph priors matter and unseen gene perturbation generalization is important; this architecture is more modality-general but less mechanistically grounded for gene knockouts/knockdowns.",
+              "Versus scVI alone: much better suited for perturbation prediction because it explicitly models perturbation conditions and response deltas, whereas scVI is primarily an integration/generative backbone rather than a perturbation predictor.",
+              "Versus matched-control or nearest-neighbor baselines: should outperform on well-sampled perturbations with dose and cell-type variation, but simple baselines can remain surprisingly competitive when training data are sparse or perturbation effects are mostly cell-state-local.",
+              "Versus linear/additive DE models: far better capacity for nonlinear interactions, but also more vulnerable to overfitting and benchmark leakage through covariate embeddings.",
+              "Compared to established perturbation benchmarks such as SciPlex-style dose response settings, the inclusion of dose is a strength, but the architecture still lacks an explicitly validated monotonic or smooth dose-response constraint."
+            ],
+            "suggestions": [
+              "Replace or augment perturbation_id embeddings with mechanistic perturbation representations: target gene identity, gene network context, compound structure fingerprints, or known target pathways. This would improve unseen perturbation generalization relative to pure ID embeddings.",
+              "Benchmark explicitly on out-of-distribution splits: unseen perturbations, unseen cell types, unseen doses, and unseen perturbation-cell type combinations. In-distribution random splits are insufficient and often overestimate utility.",
+              "Include stronger baselines beyond the current list where applicable, especially scVIDR, nearest-neighbor/matching baselines, simple pseudobulk DE transfer baselines, and foundation-model-based perturbation predictors if available.",
+              "Test whether the delta head actually adds value beyond direct conditional decoding. In many architectures, explicit delta prediction helps metrics but can duplicate signal and complicate interpretation.",
+              "For chemical perturbations, borrow from chemCPA by using molecular descriptors as first-class inputs rather than only perturbation IDs and dose embeddings.",
+              "For gene perturbations, consider GEARS-like graph priors or target-gene neighborhood conditioning to improve mechanistic extrapolation.",
+              "Evaluate pathway gating under strict ablation and pathway permutation controls; many pathway-aware modules show apparent gains due to extra parameters rather than true biological prior utility.",
+              "Report performance separately for common versus rare perturbations, high- versus low-effect perturbations, and within- versus across-cell-type transfer. Aggregate R2 or Pearson can hide major failure modes.",
+              "Use biologically meaningful evaluation beyond top-DE Pearson alone: calibration of uncertainty, sign accuracy of DE, pathway-level concordance, and ranking quality of responsive genes.",
+              "Add tests for robustness to batch-condition confounding, since conditional embeddings can exploit nuisance correlations in multi-study datasets.",
+              "Consider compositional or monotonic constraints for dose-response if the target applications involve dosage extrapolation; established dose datasets often reward smooth inductive bias.",
+              "If multimodal data are truly included, compare against methods designed for multimodal integration/translation rather than assuming the same decoder assumptions transfer cleanly across modalities."
+            ]
+          },
+          "suggestions": [
+            "Replace or augment perturbation_id embeddings with mechanistic perturbation representations: target gene identity, gene network context, compound structure fingerprints, or known target pathways. This would improve unseen perturbation generalization relative to pure ID embeddings.",
+            "Benchmark explicitly on out-of-distribution splits: unseen perturbations, unseen cell types, unseen doses, and unseen perturbation-cell type combinations. In-distribution random splits are insufficient and often overestimate utility.",
+            "Include stronger baselines beyond the current list where applicable, especially scVIDR, nearest-neighbor/matching baselines, simple pseudobulk DE transfer baselines, and foundation-model-based perturbation predictors if available.",
+            "Test whether the delta head actually adds value beyond direct conditional decoding. In many architectures, explicit delta prediction helps metrics but can duplicate signal and complicate interpretation.",
+            "For chemical perturbations, borrow from chemCPA by using molecular descriptors as first-class inputs rather than only perturbation IDs and dose embeddings.",
+            "For gene perturbations, consider GEARS-like graph priors or target-gene neighborhood conditioning to improve mechanistic extrapolation.",
+            "Evaluate pathway gating under strict ablation and pathway permutation controls; many pathway-aware modules show apparent gains due to extra parameters rather than true biological prior utility.",
+            "Report performance separately for common versus rare perturbations, high- versus low-effect perturbations, and within- versus across-cell-type transfer. Aggregate R2 or Pearson can hide major failure modes.",
+            "Use biologically meaningful evaluation beyond top-DE Pearson alone: calibration of uncertainty, sign accuracy of DE, pathway-level concordance, and ranking quality of responsive genes.",
+            "Add tests for robustness to batch-condition confounding, since conditional embeddings can exploit nuisance correlations in multi-study datasets.",
+            "Consider compositional or monotonic constraints for dose-response if the target applications involve dosage extrapolation; established dose datasets often reward smooth inductive bias.",
+            "If multimodal data are truly included, compare against methods designed for multimodal integration/translation rather than assuming the same decoder assumptions transfer cleanly across modalities."
+          ],
+          "concerns": [
+            "The baseline/effect latent factorization is not identifiable from observational perturbation data alone; decorrelation and cross-covariance penalties do not guarantee biologically meaningful disentanglement.",
+            "Generalization to unseen perturbations is fundamentally limited if perturbation_id embeddings are the main representation. This is weaker than using mechanistic features such as target genes, chemical structure, or pathway priors as primary inputs.",
+            "For strong perturbations that alter cell identity or induce trajectory shifts, the assumption of a control baseline plus additive/predictable delta may break down.",
+            "Pathway gating based on predefined gene sets can help interpretability but risks hard-coding incomplete or biased biology; performance gains may not transfer across tissues or perturbation modalities.",
+            "Top-DE-weighted auxiliary losses may improve benchmark metrics while biasing the model away from global transcriptome fidelity and subtle but biologically important expression changes.",
+            "Count-aware NB likelihood improves statistical fit for scRNA-seq, but if inputs include Pearson residuals or multimodal settings, the coherence between preprocessing and likelihood assumptions becomes less clean.",
+            "Rare perturbation oversampling does not solve the fundamental lack of information problem; uncertainty floors may regularize predictions, but they do not create true extrapolative ability.",
+            "The architecture remains highly hyperparameterized, with multiple training phases and optional modules that can make fair reproduction and ablation difficult.",
+            "Batch and cell-type embeddings can absorb perturbation signal or confound biological effect if experimental design is imbalanced, especially in real-world datasets with condition-batch entanglement.",
+            "The all-gene low-rank projection may bottleneck fine-grained gene-specific responses, particularly for rare or pathway-divergent perturbations.",
+            "Versus scGen: stronger due to count-aware decoding, explicit covariates, dose handling, and better accommodation of batch/cell-type effects; scGen's simple latent shift is easier to train but usually less faithful for complex heterogeneous datasets.",
+            "Versus CPA: similar conditional philosophy, but this model is more aligned with single-cell count statistics through an NB decoder and may better reconstruct realistic expression distributions; CPA has a cleaner perturbation-compositional framing and has been more directly stress-tested on combinatorial perturbations.",
+            "Versus chemCPA: this design is competitive for mixed perturbation settings, but if chemical perturbations are central, chemCPA's use of chemical structure and dose-response inductive bias is a major advantage for unseen compounds.",
+            "Versus GEARS: GEARS is likely stronger for CRISPR gene perturbation tasks where gene-gene graph priors matter and unseen gene perturbation generalization is important; this architecture is more modality-general but less mechanistically grounded for gene knockouts/knockdowns.",
+            "Versus scVI alone: much better suited for perturbation prediction because it explicitly models perturbation conditions and response deltas, whereas scVI is primarily an integration/generative backbone rather than a perturbation predictor.",
+            "Versus matched-control or nearest-neighbor baselines: should outperform on well-sampled perturbations with dose and cell-type variation, but simple baselines can remain surprisingly competitive when training data are sparse or perturbation effects are mostly cell-state-local.",
+            "Versus linear/additive DE models: far better capacity for nonlinear interactions, but also more vulnerable to overfitting and benchmark leakage through covariate embeddings.",
+            "Compared to established perturbation benchmarks such as SciPlex-style dose response settings, the inclusion of dose is a strength, but the architecture still lacks an explicitly validated monotonic or smooth dose-response constraint."
+          ]
+        }
+      ],
+      "timestamp": "2026-05-20T14:07:13.172783"
+    }
+  ]
+}
