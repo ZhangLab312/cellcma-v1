@@ -1,0 +1,198 @@
+{
+  "task_type": "integration",
+  "round": 1,
+  "timestamp": "2026-04-27T23:13:46.609610",
+  "blueprint": {
+    "architecture_type": "Stable Multi-Modal VAE with Free Bits and MMD Regularization (SMVAE)",
+    "model_config": {
+      "modalities": [
+        "rna",
+        "atac"
+      ],
+      "extensible_design": true,
+      "rna_encoder": {
+        "type": "MLP with LayerNorm",
+        "input_dim": 3000,
+        "hidden_layers": [
+          512,
+          256
+        ],
+        "output_dim": 256,
+        "activation": "ReLU",
+        "dropout": 0.1,
+        "normalization": "LayerNorm",
+        "output": "mu_and_logvar",
+        "library_size_embed_dim": 16
+      },
+      "atac_encoder": {
+        "type": "MLP with Peak Selection",
+        "input_dim": 5000,
+        "hidden_layers": [
+          256,
+          256
+        ],
+        "output_dim": 256,
+        "activation": "ReLU",
+        "dropout": 0.1,
+        "normalization": "LayerNorm",
+        "output": "mu_and_logvar",
+        "peak_selection": "top_variable_peaks_during_preprocessing",
+        "library_size_embed_dim": 16
+      },
+      "shared_encoder": {
+        "type": "ConditionalMLP",
+        "input_dim": 256,
+        "hidden_layers": [
+          128
+        ],
+        "condition_embedding_dim": 16,
+        "num_modalities": 2,
+        "batch_embedding_dim": 16,
+        "output": "mu_and_logvar"
+      },
+      "rna_decoder": {
+        "type": "MLP with LayerNorm",
+        "hidden_layers": [
+          256,
+          512
+        ],
+        "output_dim": 3000,
+        "output_head": "zinb_stable",
+        "zinb_stability": {
+          "mean_clamp": [
+            1e-06,
+            1000000.0
+          ],
+          "dispersion_min": 0.01,
+          "dropout_clamp": [
+            1e-06,
+            0.999
+          ],
+          "use_softplus": true
+        }
+      },
+      "atac_decoder": {
+        "type": "MLP with LayerNorm",
+        "hidden_layers": [
+          128,
+          256,
+          512
+        ],
+        "output_dim": 5000,
+        "output_head": "bernoulli",
+        "peak_subset_reconstruction": true
+      },
+      "fusion": {
+        "type": "StableWeightedPoE",
+        "mechanism": "log_space_gaussian_product",
+        "prior_expert": true,
+        "modality_weights": {
+          "learnable": true,
+          "normalization": "softmax",
+          "initial_weights": [
+            1.0,
+            1.0
+          ]
+        },
+        "temperature_scaling": {
+          "learnable": true,
+          "initial_temp": 1.0,
+          "clamp_range": [
+            0.1,
+            10.0
+          ]
+        },
+        "variance_clamp": [
+          1e-06,
+          1000000.0
+        ],
+        "missing_modality_prior": true
+      },
+      "free_bits": {
+        "enabled": true,
+        "lambda": 2.0,
+        "per_dimension": true,
+        "formula": "KL_free_bits = max(lambda, KL(q||p))"
+      },
+      "batch_correction": {
+        "method": "MMD_regularization",
+        "mmd_weight": 0.1,
+        "kernel": "rbf",
+        "batch_embedding_dim": 16
+      },
+      "loss_weighting": {
+        "method": "constrained_homoscedastic",
+        "sigma_parameterization": "softplus_plus_epsilon",
+        "epsilon": 0.01,
+        "sigma_clamp": [
+          0.01,
+          10.0
+        ],
+        "formula": "sigma = softplus(sigma_raw) + epsilon"
+      },
+      "training_stability": {
+        "gradient_clipping": {
+          "max_norm": 1.0
+        },
+        "gradient_checkpointing": {
+          "enabled": true,
+          "modules": [
+            "rna_decoder",
+            "atac_decoder"
+          ]
+        },
+        "initialization": "xavier_uniform"
+      },
+      "kl_annealing": {
+        "type": "cyclical",
+        "n_cycles": 4,
+        "ratio": 0.5,
+        "warmup_epochs": 10
+      }
+    },
+    "latent_dim": 32,
+    "loss_functions": [
+      "zinb_reconstruction",
+      "bernoulli_reconstruction",
+      "kl_divergence_with_free_bits",
+      "mmd_regularization",
+      "constrained_uncertainty_weighted_total"
+    ],
+    "memory_requirements": {
+      "gpu_gb": 8,
+      "ram_gb": 16
+    },
+    "batch_size_recommendation": 128,
+    "reasoning": "Revised architecture addresses all expert concerns: (1) Free Bits (lambda=2.0) prevents posterior collapse by ensuring minimum KL per dimension, following the ML theorist's recommendation. (2) Constrained uncertainty weighting with sigma=softplus(sigma_raw)+epsilon and clamping [0.01, 10.0] prevents degenerate solutions where sigma approaches infinity. (3) ATAC decoder now reconstructs raw peak counts (5000 top variable peaks) with Bernoulli likelihood, making the statistical formulation appropriate and addressing the methodologist's concern about LSI reconstruction. (4) Softmax normalization of modality weights and temperature clamping [0.1, 10.0] prevent PoE variance collapse and numerical instability. (5) Both encoders output consistent 256-dim representations before shared encoder, fixing the engineering mismatch. (6) Missing modality prior handles unpaired data more robustly than single-expert fallback. (7) MMD regularization enables batch correction without adversarial training complexity. (8) Gradient checkpointing on decoders reduces peak memory by ~40%. (9) Peak subset (5000 vs 20000) balances reconstruction quality with memory constraints for Bernoulli likelihood."
+  },
+  "metrics": {
+    "n_iterations": 2,
+    "n_success": 1,
+    "total_execution_time": 235.8943808078766,
+    "final_success": true,
+    "llm_generated": true,
+    "incomplete_execution": false,
+    "computed": {
+      "nmi_rna": 0.5411480421947508,
+      "ari_rna": 0.297198287045409,
+      "nmi_atac": 0.6483967587291274,
+      "ari_atac": 0.47369144612824626,
+      "nmi_avg": 0.594772400461939,
+      "ari_avg": 0.38544486658682764,
+      "asw_celltype": -0.062215905636548996,
+      "asw_batch": 0.5327015221118927,
+      "knn_cross": 0.0
+    },
+    "computed_nmi_rna": 0.5411480421947508,
+    "computed_ari_rna": 0.297198287045409,
+    "computed_nmi_atac": 0.6483967587291274,
+    "computed_ari_atac": 0.47369144612824626,
+    "computed_nmi_avg": 0.594772400461939,
+    "computed_ari_avg": 0.38544486658682764,
+    "computed_asw_celltype": -0.062215905636548996,
+    "computed_asw_batch": 0.5327015221118927,
+    "computed_knn_cross": 0.0,
+    "execution_output_lines": 2011,
+    "execution_summary": "Warning: NaN/Inf loss at epoch 54, skipping batch\nWarning: NaN/Inf loss at epoch 54, skipping batch\nWarning: NaN/Inf loss at epoch 54, skipping batch\nWarning: NaN/Inf loss at epoch 54, skipping batch\nWarning: NaN/Inf loss at epoch 54, skipping batch"
+  }
+}
